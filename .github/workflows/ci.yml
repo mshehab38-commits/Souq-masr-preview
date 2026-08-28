@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: souqmasr
+          POSTGRES_PASSWORD: souqmasr_dev_pw
+          POSTGRES_DB: souqmasr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U souqmasr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://souqmasr:souqmasr_dev_pw@localhost:5432/souqmasr?schema=public
+      REDIS_URL: redis://localhost:6379
+      APP_URL: http://localhost:3000
+      # CI-only value — `next build` forces NODE_ENV=production, which our env
+      # validation requires a real OTP_PEPPER for. Actual deployments must set
+      # their own via the hosting platform's secret manager. (Deliberately
+      # job-wide: unlike STORAGE_*, this doesn't change which provider the app
+      # picks, so it's safe for the test/e2e steps too.)
+      OTP_PEPPER: ${{ secrets.OTP_PEPPER || 'ci-only-placeholder-pepper-not-for-prod' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Enforce module boundaries
+        run: npm run boundaries
+
+      - name: Apply database migrations
+        run: npm run db:migrate:deploy
+
+      - name: Check schema.prisma matches the applied migrations (no forgotten migration)
+        run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel ./prisma/schema.prisma --exit-code
+
+      - name: Seed database
+        run: npm run db:seed
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: npm run e2e
+
+      - name: Build
+        # Object storage vars scoped to this step only — the app must use the
+        # LocalStorageProvider fallback (STORAGE_* unset) during dev/test, but
+        # `next build` forces NODE_ENV=production, which requires them set. A
+        # real deployment supplies real R2 credentials via its own secrets.
+        env:
+          STORAGE_ENDPOINT: https://placeholder-account.r2.cloudflarestorage.com
+          STORAGE_BUCKET: souq-masr-ci-placeholder
+          STORAGE_ACCESS_KEY_ID: placeholder
+          STORAGE_SECRET_ACCESS_KEY: placeholder
+          STORAGE_PUBLIC_CDN_URL: https://placeholder-cdn.example.com
+        run: npm run build

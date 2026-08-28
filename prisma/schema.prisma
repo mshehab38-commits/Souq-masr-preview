@@ -1,0 +1,347 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pg_trgm]
+}
+
+enum UserRole {
+  INDIVIDUAL
+  BUSINESS
+  MODERATOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+model User {
+  id                 String     @id @default(cuid())
+  phone              String     @unique
+  name               String?
+  role               UserRole   @default(INDIVIDUAL)
+  status             UserStatus @default(ACTIVE)
+  phoneVerifiedAt    DateTime?
+  commerceVerifiedAt DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  deletedAt          DateTime?
+
+  listings             Listing[]
+  sessions             Session[]
+  verificationRequests VerificationRequest[]
+  auditLogs            AuditLog[]            @relation("AuditActor")
+  favorites            Favorite[]
+  savedSearches        SavedSearch[]
+  store                Store?
+
+  @@map("users")
+}
+
+enum OtpPurpose {
+  LOGIN_OR_REGISTER
+}
+
+// Keyed by phone, not by user: a code can be requested before any User row
+// exists yet (the OTP flow doubles as registration on first verification).
+model OtpCode {
+  id          String     @id @default(cuid())
+  phone       String
+  codeHash    String
+  purpose     OtpPurpose @default(LOGIN_OR_REGISTER)
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime   @default(now())
+
+  @@index([phone, createdAt])
+  @@map("otp_codes")
+}
+
+// Opaque, server-revocable session tokens — only a hash is ever stored, so a
+// database read alone can never yield a usable session token.
+model Session {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+enum VerificationRequestType {
+  INDIVIDUAL_SELLER
+  BUSINESS
+}
+
+enum VerificationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// The submission path exists from Phase 2; the admin review UI lands in
+// Phase 10. documentUrl stays optional until Phase 3 builds real uploads.
+model VerificationRequest {
+  id           String                    @id @default(cuid())
+  userId       String
+  user         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         VerificationRequestType
+  status       VerificationRequestStatus @default(PENDING)
+  businessName String?
+  documentUrl  String?
+  notes        String?
+  reviewedBy   String?
+  reviewedAt   DateTime?
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@map("verification_requests")
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+}
+
+model AuditLog {
+  id         String         @id @default(cuid())
+  actorId    String?
+  actor      User?          @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorType  AuditActorType @default(USER)
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   Json?
+  createdAt  DateTime       @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+model Governorate {
+  id     String @id @default(cuid())
+  slug   String @unique
+  nameAr String
+  nameEn String
+
+  cities   City[]
+  listings Listing[]
+
+  @@map("governorates")
+}
+
+model City {
+  id            String      @id @default(cuid())
+  slug          String
+  nameAr        String
+  nameEn        String
+  governorateId String
+  governorate   Governorate @relation(fields: [governorateId], references: [id], onDelete: Restrict)
+  listings      Listing[]
+
+  @@unique([governorateId, slug])
+  @@index([governorateId])
+  @@map("cities")
+}
+
+enum CategoryAttributeType {
+  TEXT
+  NUMBER
+  SELECT
+  BOOLEAN
+}
+
+enum CategoryCommerceDefault {
+  ELIGIBLE
+  NOT_ELIGIBLE
+  ADMIN_REVIEW
+}
+
+model Category {
+  id              String                  @id @default(cuid())
+  slug            String                  @unique
+  nameAr          String
+  nameEn          String
+  icon            String?
+  sortOrder       Int                     @default(0)
+  // Default only — never a permanent lock. A per-seller/per-listing admin
+  // override table lands in Phase 10; resolveCommerceEligibility() already
+  // reads it as an extension point, it just has nothing to consult yet.
+  commerceDefault CategoryCommerceDefault @default(NOT_ELIGIBLE)
+  deletedAt       DateTime?
+
+  attributes CategoryAttribute[]
+  listings   Listing[]
+
+  @@map("categories")
+}
+
+// Data-driven per-category form fields — admin-managed from Phase 9 onward,
+// so the frontend never hardcodes a category's attribute set.
+model CategoryAttribute {
+  id         String                @id @default(cuid())
+  categoryId String
+  category   Category              @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  key        String
+  labelAr    String
+  labelEn    String
+  type       CategoryAttributeType
+  options    Json?
+  required   Boolean               @default(false)
+  sortOrder  Int                   @default(0)
+  deletedAt  DateTime?
+
+  @@unique([categoryId, key])
+  @@index([categoryId])
+  @@map("category_attributes")
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  SOLD
+  EXPIRED
+  REJECTED
+  REMOVED
+}
+
+enum FulfillmentMode {
+  SELF_ARRANGED
+  PLATFORM_SHIPPING
+  SELLER_DELIVERY
+}
+
+model Listing {
+  id              String           @id @default(cuid())
+  title           String
+  description     String?
+  price           Decimal?         @db.Decimal(12, 2)
+  currency        String           @default("EGP")
+  negotiable      Boolean          @default(false)
+  status          ListingStatus    @default(DRAFT)
+  ownerId         String
+  owner           User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  categoryId      String
+  category        Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  governorateId   String?
+  governorate     Governorate?     @relation(fields: [governorateId], references: [id], onDelete: SetNull)
+  cityId          String?
+  city            City?            @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  // Category-attribute values, validated server-side against CategoryAttribute
+  // at write time — never trusted as-is from the client.
+  attributes      Json?
+  // Hybrid commerce model (per-listing, not per-category-locked): see
+  // modules/catalog/commerceEligibility.ts for how these are resolved.
+  commerceEnabled Boolean          @default(false)
+  fulfillmentMode FulfillmentMode?
+  // Precomputed, Arabic-normalized "title + description" used by the
+  // PostgresSearchProvider (pg_trgm) — kept in sync on every write so search
+  // never has to re-normalize at query time.
+  searchText      String?
+  viewCount       Int              @default(0)
+  expiresAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  deletedAt       DateTime?
+
+  images    ListingImage[]
+  favorites Favorite[]
+
+  @@index([categoryId])
+  @@index([ownerId])
+  @@index([status])
+  @@index([governorateId])
+  @@index([price])
+  @@index([searchText(ops: raw("gin_trgm_ops"))], type: Gin, map: "listings_searchText_trgm_idx")
+  @@map("listings")
+}
+
+enum ListingImageStatus {
+  PENDING
+  READY
+  REJECTED
+}
+
+// One row per uploaded image; variant URLs are filled in asynchronously by
+// the image-processing worker once it has resized/re-encoded the original.
+model ListingImage {
+  id           String             @id @default(cuid())
+  listingId    String
+  listing      Listing            @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  originalKey  String
+  thumbnailUrl String?
+  mediumUrl    String?
+  fullUrl      String?
+  status       ListingImageStatus @default(PENDING)
+  sortOrder    Int                @default(0)
+  createdAt    DateTime           @default(now())
+
+  @@index([listingId])
+  @@map("listing_images")
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+  @@index([listingId])
+  @@map("favorites")
+}
+
+model SavedSearch {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  query     Json
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("saved_searches")
+}
+
+// One optional public storefront per seller — available to individual and
+// business sellers alike (not gated to User.role === BUSINESS), matching the
+// hybrid per-listing commerce model rather than tying features to account
+// type. Purely a free branding/discovery surface in this phase: no paid
+// tiers, no financial fields (that would be an OWNER DECISION REQUIRED item
+// for a future phase, not invented here).
+model Store {
+  id          String    @id @default(cuid())
+  ownerId     String    @unique
+  owner       User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  slug        String    @unique
+  name        String
+  description String?
+  logoUrl     String?
+  coverUrl    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@map("stores")
+}

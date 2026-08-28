@@ -1,0 +1,61 @@
+import { z } from "zod";
+
+const baseEnvSchema = z.object({
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  DATABASE_URL: z.string().url(),
+  REDIS_URL: z.string().url(),
+  APP_URL: z.string().url().default("http://localhost:3000"),
+  OTP_PEPPER: z.string().min(16).optional(),
+  // Object storage (Cloudflare R2 / S3-compatible). Optional outside
+  // production, where the app falls back to local-filesystem storage for
+  // dev/test only; required in production (see the refinement below) since
+  // production images must never live on the application server.
+  STORAGE_ENDPOINT: z.string().url().optional(),
+  STORAGE_BUCKET: z.string().min(1).optional(),
+  STORAGE_ACCESS_KEY_ID: z.string().min(1).optional(),
+  STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  STORAGE_PUBLIC_CDN_URL: z.string().url().optional(),
+});
+
+export const envSchema = baseEnvSchema.superRefine((data, ctx) => {
+  if (data.NODE_ENV !== "production") return;
+
+  if (!data.OTP_PEPPER) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["OTP_PEPPER"],
+      message: "OTP_PEPPER is required in production (no safe default)",
+    });
+  }
+
+  const storageKeys = [
+    "STORAGE_ENDPOINT",
+    "STORAGE_BUCKET",
+    "STORAGE_ACCESS_KEY_ID",
+    "STORAGE_SECRET_ACCESS_KEY",
+    "STORAGE_PUBLIC_CDN_URL",
+  ] as const;
+  const missingStorage = storageKeys.filter((key) => !data[key]);
+  if (missingStorage.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["STORAGE_ENDPOINT"],
+      message: `Object storage must be configured in production (missing: ${missingStorage.join(", ")}) — images must never fall back to local filesystem storage`,
+    });
+  }
+});
+
+export type Env = z.infer<typeof envSchema>;
+
+export function loadEnv(source: Record<string, string | undefined> = process.env): Env {
+  const parsed = envSchema.safeParse(source);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`Invalid environment configuration: ${issues}`);
+  }
+  return parsed.data;
+}
+
+export const env = loadEnv();
