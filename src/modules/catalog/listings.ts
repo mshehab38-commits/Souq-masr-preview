@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import type { FulfillmentMode, Prisma } from "@prisma/client";
 import { searchIndexQueue } from "@/jobs/queues";
+import { resolveActiveListingLimit } from "@/modules/subscriptions/service";
 import { resolveCommerceEligibility } from "./commerceEligibility";
 import { validateListingAttributes } from "./attributes";
 
@@ -26,12 +27,27 @@ export interface ListingInput {
 export type CreateListingResult =
   | { success: true; listingId: string }
   | { success: false; error: "invalid_attributes"; details: string[] }
-  | { success: false; error: "commerce_not_allowed"; reason: string };
+  | { success: false; error: "commerce_not_allowed"; reason: string }
+  | { success: false; error: "listing_limit_reached"; limit: number };
 
 export async function createListing(
   ownerId: string,
   input: ListingInput,
 ): Promise<CreateListingResult> {
+  // Fails OPEN when unconfigured: resolveActiveListingLimit() returns null
+  // both when the owner hasn't set a free-tier cap yet AND when the
+  // seller's plan grants unlimited listings — either way, no cap is
+  // enforced rather than inventing one. See docs/DECISIONS.md.
+  const limit = await resolveActiveListingLimit(ownerId);
+  if (limit !== null) {
+    const activeCount = await prisma.listing.count({
+      where: { ownerId, status: "ACTIVE", deletedAt: null },
+    });
+    if (activeCount >= limit) {
+      return { success: false, error: "listing_limit_reached", limit };
+    }
+  }
+
   const attributeResult = await validateListingAttributes(input.categoryId, input.attributes);
   if (!attributeResult.success) {
     return { success: false, error: "invalid_attributes", details: attributeResult.errors ?? [] };

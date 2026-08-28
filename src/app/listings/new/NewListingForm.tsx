@@ -5,8 +5,7 @@ import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { FilterSelect } from "@/components/ui/Filters";
-import { readCookie } from "@/lib/client-cookies";
-import { CSRF_COOKIE_NAME } from "@/lib/cookie-names";
+import { csrfHeaders } from "@/lib/csrf-headers";
 
 type AttributeType = "TEXT" | "NUMBER" | "SELECT" | "BOOLEAN";
 
@@ -47,10 +46,6 @@ const FULFILLMENT_LABELS: Record<string, string> = {
   PLATFORM_SHIPPING: "شحن عبر المنصة",
   SELLER_DELIVERY: "توصيل يقوم به البائع",
 };
-
-function csrfHeaders(): HeadersInit {
-  return { "Content-Type": "application/json", "x-csrf-token": readCookie(CSRF_COOKIE_NAME) ?? "" };
-}
 
 export function NewListingForm({ categories, governorates, sellerCommerceVerified }: NewListingFormProps) {
   const router = useRouter();
@@ -111,11 +106,15 @@ export function NewListingForm({ categories, governorates, sellerCommerceVerifie
 
       const data = await response.json();
       if (!response.ok) {
-        setError(
-          data.error === "invalid_attributes"
-            ? (data.details ?? []).join("، ")
-            : "تعذر نشر الإعلان، تحقق من البيانات المدخلة",
-        );
+        if (data.error === "invalid_attributes") {
+          setError((data.details ?? []).join("، "));
+        } else if (data.error === "listing_limit_reached") {
+          setError(
+            `لقد وصلت إلى الحد الأقصى لعدد الإعلانات النشطة المجانية (${data.limit}). يمكنك ترقية حسابك لنشر المزيد.`,
+          );
+        } else {
+          setError("تعذر نشر الإعلان، تحقق من البيانات المدخلة");
+        }
         return;
       }
 

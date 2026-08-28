@@ -9,6 +9,6 @@ export {
   SESSION_COOKIE_NAME,
   CSRF_COOKIE_NAME,
 } from "./session";
-export { hasRole } from "./rbac";
+export { hasRole, requireAdmin } from "./rbac";
 export { submitVerificationRequest, getVerificationRequests } from "./verification";
 export { normalizeEgyptianPhone, formatEgyptianPhoneLocal } from "./phone";

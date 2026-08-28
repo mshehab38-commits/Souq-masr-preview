@@ -28,6 +28,9 @@ export default async function DashboardPage() {
       <div className="mb-6 flex items-center justify-between">
         <h1 className="font-cairo text-2xl font-bold text-neutral-900">لوحة التحكم</h1>
         <div className="flex gap-2">
+          <Link href="/dashboard/orders">
+            <Button variant="outline">مبيعاتي</Button>
+          </Link>
           <Link href="/listings/mine">
             <Button variant="outline">إدارة الإعلانات</Button>
           </Link>

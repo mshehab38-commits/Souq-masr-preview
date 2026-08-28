@@ -29,6 +29,7 @@ export {
   bulkUpdateListings,
   renewListing,
   getSellerStats,
+  LISTING_LIFETIME_MS,
 } from "./listings";
 export type {
   ListingInput,

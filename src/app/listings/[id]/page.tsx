@@ -1,10 +1,12 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { getCurrentUser } from "@/modules/identity/service";
 import { getListingById } from "@/modules/catalog/service";
 import { ImageGallery } from "@/components/ui/ImageGallery";
 import { PriceTag } from "@/components/ui/PriceTag";
 import { Badge, VerifiedBadge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
 import { ListingDetailActions } from "./ListingDetailActions";
 import { ListingImageUploader } from "./ListingImageUploader";
 
@@ -82,6 +84,14 @@ export default async function ListingDetailPage({ params }: { params: Promise<{ 
               </a>
             )}
           </Card>
+
+          {!isOwner && listing.commerceEnabled && listing.status === "ACTIVE" && (
+            <Link href={`/listings/${listing.id}/checkout`}>
+              <Button fullWidth size="lg">
+                اشترِ الآن
+              </Button>
+            </Link>
+          )}
 
           <ListingDetailActions listingId={listing.id} isOwner={isOwner} isSold={listing.status === "SOLD"} />
         </div>

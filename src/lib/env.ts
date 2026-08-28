@@ -15,6 +15,15 @@ const baseEnvSchema = z.object({
   STORAGE_ACCESS_KEY_ID: z.string().min(1).optional(),
   STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),
   STORAGE_PUBLIC_CDN_URL: z.string().url().optional(),
+  // Online payment gateway (Paymob). Entirely optional: cash-on-delivery
+  // (CodPaymentProvider) is the only active PaymentProvider until real
+  // production credentials are supplied — a production-credentials
+  // decision for the owner, never invented here. See
+  // src/modules/payments/paymob-provider.ts.
+  PAYMOB_API_KEY: z.string().min(1).optional(),
+  PAYMOB_INTEGRATION_ID: z.string().min(1).optional(),
+  PAYMOB_IFRAME_ID: z.string().min(1).optional(),
+  PAYMOB_HMAC_SECRET: z.string().min(1).optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {

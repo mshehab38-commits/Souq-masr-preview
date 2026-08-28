@@ -41,6 +41,10 @@ model User {
   favorites            Favorite[]
   savedSearches        SavedSearch[]
   store                Store?
+  subscriptions        Subscription[]
+  buyerOrders          Order[]               @relation("BuyerOrders")
+  sellerOrders         Order[]               @relation("SellerOrders")
+  sellerPayouts        SellerPayout[]
 
   @@map("users")
 }
@@ -142,8 +146,9 @@ model Governorate {
   nameAr String
   nameEn String
 
-  cities   City[]
-  listings Listing[]
+  cities        City[]
+  listings      Listing[]
+  shippingRates ShippingRate[]
 
   @@map("governorates")
 }
@@ -265,6 +270,7 @@ model Listing {
 
   images    ListingImage[]
   favorites Favorite[]
+  orders    Order[]
 
   @@index([categoryId])
   @@index([ownerId])
@@ -344,4 +350,419 @@ model Store {
   deletedAt   DateTime?
 
   @@map("stores")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Financial architecture, subscriptions, shipping, orders/checkout
+// ---------------------------------------------------------------------------
+//
+// Approved owner business model (see docs/DECISIONS.md and PROJECT_STATE.md
+// for the full record):
+//   - Souq Masr charges ZERO commission on product sale value. A seller's
+//     payout always equals the order's productPrice in full.
+//   - Platform revenue comes only from: seller/business subscriptions,
+//     paid/promoted listings, and a commission charged TO shipping
+//     companies (never to sellers or buyers) on shipments they fulfill
+//     through the platform.
+//   - Every financial percentage/price the owner has not explicitly set is
+//     modeled as a nullable, admin-configurable field — never a hardcoded
+//     or invented literal. A null value fails safe (see each field's
+//     comment for its specific fail-safe behavior), never fails closed by
+//     surprise and never silently assumes a number nobody chose.
+//   - Seller funds and platform revenue are never mixed: LedgerEntry tags
+//     every money movement with an `account`, and SellerPayout is a
+//     separate model from platform revenue bookkeeping.
+
+// Singleton config row (always the single "singleton"-id record) for
+// platform-wide financial defaults that don't need their own table.
+model PlatformSettings {
+  id String @id @default("singleton")
+
+  // Free-tier cap on how many ACTIVE listings an individual (non-subscribed)
+  // seller may have at once. Null = OWNER CONFIGURATION REQUIRED — not yet
+  // set by the owner. Fails OPEN: createListing() applies no cap at all
+  // while this is null, rather than blocking listing creation on an
+  // invented number. See resolveActiveListingLimit() in the subscriptions
+  // module.
+  freeListingActiveLimit Int?
+
+  // Who bears a live payment gateway's per-transaction processing fee once
+  // one is configured (Paymob/Fawry). Has no effect today — the only active
+  // PaymentProvider is cash-on-delivery, which has no gateway fee at all.
+  // Null = OWNER CONFIGURATION REQUIRED.
+  paymentProcessingFeeBearer PaymentFeeBearer?
+
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("platform_settings")
+}
+
+enum PaymentFeeBearer {
+  PLATFORM
+  SELLER
+  BUYER
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+// Admin-managed catalog of paid seller/business plans. A plan with both
+// prices null cannot be subscribed to (disabled in the UI/API) — it exists
+// only as a named placeholder until the owner sets real pricing.
+model SubscriptionPlan {
+  id     String @id @default(cuid())
+  slug   String @unique
+  nameAr String
+  nameEn String
+
+  // Null = OWNER CONFIGURATION REQUIRED. Never defaulted to 0 or an
+  // invented figure — a plan only becomes purchasable once both are set
+  // (or the specific billing cycle offered is set; a plan may offer only
+  // one of the two).
+  monthlyPrice Decimal? @db.Decimal(12, 2)
+  yearlyPrice  Decimal? @db.Decimal(12, 2)
+  currency     String   @default("EGP")
+
+  // Benefit configuration — every field here is a real, owner-editable
+  // plan benefit, not a hardcoded per-plan assumption in application code.
+  activeListingLimit    Int? // null = unlimited under this plan
+  imageLimitPerListing  Int? // null = falls back to the platform default
+  allowPromotedListings Boolean @default(false)
+  priorityPlacement     Boolean @default(false)
+  geographicTargeting   Json? // flexible: e.g. { governorateIds: [...] }
+  storeFeatures         Json? // flexible bag: custom branding, analytics, etc.
+
+  sortOrder Int       @default(0)
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  subscriptions Subscription[]
+
+  @@map("subscription_plans")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+}
+
+// A seller's subscription to a plan. Self-serve online purchase isn't wired
+// yet — that needs a live payment gateway, which needs real Paymob
+// credentials (a production-credentials decision, not an engineering one;
+// see docs/PAYMENTS.md). Until then every Subscription is admin-granted,
+// e.g. after an offline/manual payment arrangement — a legitimate, common
+// pattern for early-stage B2B billing, not a placeholder hack.
+model Subscription {
+  id               String             @id @default(cuid())
+  userId           String
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId           String
+  plan             SubscriptionPlan   @relation(fields: [planId], references: [id], onDelete: Restrict)
+  billingCycle     BillingCycle
+  status           SubscriptionStatus @default(ACTIVE)
+  startedAt        DateTime           @default(now())
+  currentPeriodEnd DateTime
+  cancelledAt      DateTime?
+  grantedBy        String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  ledgerEntries LedgerEntry[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+// Shipping companies, their rates, and Souq Masr's commission on them are
+// modeled entirely separately from seller product revenue and payouts, per
+// the approved business model: this money never touches a seller's payout.
+model ShippingCompany {
+  id             String    @id @default(cuid())
+  slug           String    @unique
+  name           String
+  isActive       Boolean   @default(true)
+  contactInfo    Json?
+  // Company-wide fallback rate used when no governorate-specific
+  // ShippingRate row exists for the buyer's governorate. Kept on the
+  // company itself, not as a nullable-governorate row in ShippingRate:
+  // Postgres unique indexes treat every NULL as distinct, so a
+  // (companyId, governorateId) unique constraint can NOT enforce "at most
+  // one default row per company" when governorateId is null — this field
+  // is the correct place for that value instead. Null = no fallback
+  // configured; the company is only offered where a specific rate exists.
+  defaultFlatFee Decimal?  @db.Decimal(12, 2)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  rates           ShippingRate[]
+  commissionRules ShippingCommissionRule[]
+  settlements     ShippingSettlement[]
+  orders          Order[]
+
+  @@map("shipping_companies")
+}
+
+// The real courier price charged to the buyer for a specific
+// company/governorate pair — a negotiated operational cost, not a
+// platform take rate. A company with no row here for a given governorate
+// falls back to ShippingCompany.defaultFlatFee (see its comment for why
+// that lives there and not as a nullable-governorate row in this table).
+model ShippingRate {
+  id                String          @id @default(cuid())
+  shippingCompanyId String
+  shippingCompany   ShippingCompany @relation(fields: [shippingCompanyId], references: [id], onDelete: Cascade)
+  governorateId     String
+  governorate       Governorate     @relation(fields: [governorateId], references: [id], onDelete: Cascade)
+  flatFee           Decimal         @db.Decimal(12, 2)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([shippingCompanyId, governorateId])
+  @@map("shipping_rates")
+}
+
+// Souq Masr's cut of shipping revenue, owed BY the shipping company — never
+// deducted from the seller or the buyer. Null = OWNER CONFIGURATION
+// REQUIRED; the platform earns 0% on shipping until the owner sets a real
+// contracted percentage per company.
+model ShippingCommissionRule {
+  id                String          @id @default(cuid())
+  shippingCompanyId String          @unique
+  shippingCompany   ShippingCompany @relation(fields: [shippingCompanyId], references: [id], onDelete: Cascade)
+  commissionPercent Decimal?        @db.Decimal(5, 2)
+  isActive          Boolean         @default(true)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@map("shipping_commission_rules")
+}
+
+enum ShippingSettlementStatus {
+  PENDING
+  INVOICED
+  PAID
+}
+
+// A periodic reconciliation of what a shipping company owes Souq Masr in
+// commission, kept fully separate from seller payouts and platform
+// subscription/ad revenue bookkeeping.
+model ShippingSettlement {
+  id                String                   @id @default(cuid())
+  shippingCompanyId String
+  shippingCompany   ShippingCompany          @relation(fields: [shippingCompanyId], references: [id], onDelete: Restrict)
+  periodStart       DateTime
+  periodEnd         DateTime
+  totalShippingFees Decimal                  @db.Decimal(12, 2)
+  totalCommission   Decimal                  @db.Decimal(12, 2)
+  status            ShippingSettlementStatus @default(PENDING)
+  invoiceReference  String?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  ledgerEntries LedgerEntry[]
+
+  @@index([shippingCompanyId])
+  @@map("shipping_settlements")
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY_FOR_PICKUP
+  PICKED_UP
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  FAILED
+  RETURNED
+  REFUNDED
+  DISPUTED
+}
+
+enum PaymentMethod {
+  CASH_ON_DELIVERY
+  ONLINE
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+enum OrderCancelledBy {
+  BUYER
+  SELLER
+  SYSTEM
+}
+
+// One order per checkout on a single commerce-enabled listing. Money
+// fields are snapshotted at checkout time from the listing/rate tables in
+// effect then — never re-read live — so a later price or rate change can
+// never silently alter an order already in flight.
+model Order {
+  id       String @id @default(cuid())
+  buyerId  String
+  buyer    User   @relation("BuyerOrders", fields: [buyerId], references: [id], onDelete: Restrict)
+  sellerId String
+  seller   User   @relation("SellerOrders", fields: [sellerId], references: [id], onDelete: Restrict)
+
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Restrict)
+
+  status OrderStatus @default(PENDING)
+
+  // Snapshotted from Listing.fulfillmentMode at checkout time.
+  fulfillmentMode FulfillmentMode
+
+  // The full agreed sale price, snapshotted from Listing.price. Souq Masr
+  // charges ZERO commission on this — SellerPayout.amount always equals
+  // this figure exactly.
+  productPrice Decimal @db.Decimal(12, 2)
+  currency     String  @default("EGP")
+
+  shippingCompanyId        String?
+  shippingCompany          ShippingCompany? @relation(fields: [shippingCompanyId], references: [id], onDelete: SetNull)
+  // Snapshotted from ShippingRate at checkout time. Owed to the shipping
+  // company (see ShippingCommissionRule for the platform's separate cut of
+  // this), never seller revenue. Null for SELF_ARRANGED/SELLER_DELIVERY.
+  shippingFee              Decimal?         @db.Decimal(12, 2)
+  // Souq Masr's cut of shippingFee, snapshotted from ShippingCommissionRule
+  // at checkout time — never recomputed later from a rule that may have
+  // since changed, so a settlement always reflects exactly what was agreed
+  // when the order was placed. Zero whenever no commission rule was active
+  // for that company at checkout time (never an invented percentage).
+  shippingCommissionAmount Decimal?         @db.Decimal(12, 2)
+
+  // Only ever populated once a live online-payment provider is active and
+  // PlatformSettings.paymentProcessingFeeBearer is set; always null for
+  // cash-on-delivery orders, since no payment gateway is involved.
+  paymentProcessingFee Decimal? @db.Decimal(12, 2)
+
+  // productPrice + shippingFee (+ paymentProcessingFee only if the buyer is
+  // configured to bear it) — the amount actually charged to/collected from
+  // the buyer.
+  totalAmount Decimal @db.Decimal(12, 2)
+
+  paymentMethod PaymentMethod @default(CASH_ON_DELIVERY)
+  paymentStatus PaymentStatus @default(PENDING)
+
+  // Buyer-supplied delivery details at checkout, snapshotted as JSON (same
+  // pattern as Listing.attributes) rather than a separate Address model —
+  // an order's delivery details must never change retroactively if the
+  // buyer's saved address later does.
+  shippingAddress Json?
+  buyerNote       String?
+
+  cancelReason String?
+  cancelledBy  OrderCancelledBy?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  confirmedAt DateTime?
+  deliveredAt DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+
+  ledgerEntries LedgerEntry[]
+  sellerPayout  SellerPayout?
+
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([listingId])
+  @@index([status])
+  @@map("orders")
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+// The amount owed to a seller for a completed order — always exactly
+// Order.productPrice, since Souq Masr charges zero commission on product
+// sales. For cash-on-delivery orders this row exists for bookkeeping/
+// reporting only: no money ever passes through the platform, since the
+// buyer pays the seller/courier directly.
+model SellerPayout {
+  id       String @id @default(cuid())
+  sellerId String
+  seller   User   @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  orderId  String @unique
+  order    Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  amount Decimal      @db.Decimal(12, 2)
+  status PayoutStatus @default(PENDING)
+  paidAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sellerId])
+  @@map("seller_payouts")
+}
+
+enum LedgerEntryType {
+  ORDER_PAYMENT_RECEIVED
+  SELLER_PAYOUT
+  SUBSCRIPTION_REVENUE
+  PROMOTED_LISTING_REVENUE
+  SHIPPING_COMMISSION_REVENUE
+  REFUND_ISSUED
+  SHIPPING_COMPANY_SETTLEMENT
+}
+
+// Which side of the books an entry belongs to. PLATFORM_REVENUE is used
+// ONLY for subscription/promoted-listing/shipping-commission revenue —
+// never for an order's product price, which always posts to
+// SELLER_PAYABLE instead. This is what keeps seller funds and platform
+// revenue from ever being mixed in the data model.
+enum LedgerAccount {
+  PLATFORM_REVENUE
+  SELLER_PAYABLE
+  BUYER_REFUNDABLE
+  SHIPPING_COMPANY_PAYABLE
+}
+
+// Append-only financial audit trail. Every money movement in the system —
+// platform revenue or not — gets a row here, tagged with `account` so
+// reporting can never accidentally conflate seller funds with Souq Masr's
+// own revenue.
+model LedgerEntry {
+  id       String          @id @default(cuid())
+  type     LedgerEntryType
+  account  LedgerAccount
+  amount   Decimal         @db.Decimal(12, 2)
+  currency String          @default("EGP")
+
+  orderId String?
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  shippingSettlementId String?
+  shippingSettlement   ShippingSettlement? @relation(fields: [shippingSettlementId], references: [id], onDelete: SetNull)
+
+  description String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([type])
+  @@index([orderId])
+  @@map("ledger_entries")
 }

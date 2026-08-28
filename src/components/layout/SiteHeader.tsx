@@ -25,6 +25,9 @@ export async function SiteHeader() {
               <Link href="/listings/mine" className="hover:text-teal-700">
                 إعلاناتي
               </Link>
+              <Link href="/orders" className="hover:text-teal-700">
+                طلباتي
+              </Link>
             </>
           )}
         </nav>
