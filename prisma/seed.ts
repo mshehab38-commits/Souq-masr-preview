@@ -35,13 +35,20 @@ async function seedCategories() {
   for (const [index, cat] of categories.entries()) {
     const category = await prisma.category.upsert({
       where: { slug: cat.slug },
-      update: { nameAr: cat.nameAr, nameEn: cat.nameEn, icon: cat.icon, sortOrder: index },
+      update: {
+        nameAr: cat.nameAr,
+        nameEn: cat.nameEn,
+        icon: cat.icon,
+        sortOrder: index,
+        commerceDefault: cat.commerceDefault,
+      },
       create: {
         slug: cat.slug,
         nameAr: cat.nameAr,
         nameEn: cat.nameEn,
         icon: cat.icon,
         sortOrder: index,
+        commerceDefault: cat.commerceDefault,
       },
     });
 

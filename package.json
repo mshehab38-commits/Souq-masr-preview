@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
+    "worker": "tsx --env-file-if-exists=.env src/worker.ts",
     "boundaries": "depcruise --config .dependency-cruiser.cjs src",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
@@ -17,12 +18,15 @@
     "db:generate": "prisma generate"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1120.0",
+    "@aws-sdk/s3-request-presigner": "^3.1120.0",
     "@prisma/client": "^6.2.1",
     "bullmq": "^5.34.4",
     "ioredis": "^5.4.2",
     "next": "^15.1.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "sharp": "^0.35.4",
     "zod": "^3.24.1"
   },
   "devDependencies": {

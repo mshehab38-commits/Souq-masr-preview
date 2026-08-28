@@ -30,7 +30,9 @@ jobs:
       APP_URL: http://localhost:3000
       # CI-only value — `next build` forces NODE_ENV=production, which our env
       # validation requires a real OTP_PEPPER for. Actual deployments must set
-      # their own via the hosting platform's secret manager.
+      # their own via the hosting platform's secret manager. (Deliberately
+      # job-wide: unlike STORAGE_*, this doesn't change which provider the app
+      # picks, so it's safe for the test/e2e steps too.)
       OTP_PEPPER: ${{ secrets.OTP_PEPPER || 'ci-only-placeholder-pepper-not-for-prod' }}
 
     steps:
@@ -72,4 +74,14 @@ jobs:
         run: npm run e2e
 
       - name: Build
+        # Object storage vars scoped to this step only — the app must use the
+        # LocalStorageProvider fallback (STORAGE_* unset) during dev/test, but
+        # `next build` forces NODE_ENV=production, which requires them set. A
+        # real deployment supplies real R2 credentials via its own secrets.
+        env:
+          STORAGE_ENDPOINT: https://placeholder-account.r2.cloudflarestorage.com
+          STORAGE_BUCKET: souq-masr-ci-placeholder
+          STORAGE_ACCESS_KEY_ID: placeholder
+          STORAGE_SECRET_ACCESS_KEY: placeholder
+          STORAGE_PUBLIC_CDN_URL: https://placeholder-cdn.example.com
         run: npm run build

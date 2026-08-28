@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Cairo, Tajawal } from "next/font/google";
+import { SiteHeader } from "@/components/layout/SiteHeader";
 import "./globals.css";
 
 const cairo = Cairo({
@@ -19,7 +20,7 @@ export const metadata: Metadata = {
   description: "منصة سوق مصر — إعلانات مبوبة وسوق إلكتروني للمصريين",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
@@ -27,6 +28,7 @@ export default function RootLayout({
       <body
         className={`${cairo.variable} ${tajawal.variable} font-tajawal antialiased bg-neutral-50 text-neutral-900`}
       >
+        <SiteHeader />
         {children}
       </body>
     </html>

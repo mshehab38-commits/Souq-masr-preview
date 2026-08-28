@@ -15,11 +15,16 @@ export interface CategoryAttributeSeed {
   required?: boolean;
 }
 
+export type CommerceDefault = "ELIGIBLE" | "NOT_ELIGIBLE" | "ADMIN_REVIEW";
+
 export interface CategorySeed {
   slug: string;
   nameAr: string;
   nameEn: string;
   icon: string;
+  // Default checkout eligibility for listings in this category — never a
+  // permanent lock, see modules/catalog/commerceEligibility.ts.
+  commerceDefault: CommerceDefault;
   attributes: CategoryAttributeSeed[];
 }
 
@@ -43,6 +48,7 @@ export const categories: CategorySeed[] = [
     nameAr: "عقارات",
     nameEn: "Real Estate",
     icon: "building",
+    commerceDefault: "NOT_ELIGIBLE",
     attributes: [
       {
         key: "listing_purpose",
@@ -91,6 +97,7 @@ export const categories: CategorySeed[] = [
     nameAr: "سيارات",
     nameEn: "Cars",
     icon: "car",
+    commerceDefault: "NOT_ELIGIBLE",
     attributes: [
       { key: "brand", labelAr: "الماركة", labelEn: "Brand", type: "TEXT", required: true },
       { key: "model", labelAr: "الموديل", labelEn: "Model", type: "TEXT", required: true },
@@ -126,6 +133,7 @@ export const categories: CategorySeed[] = [
     nameAr: "دراجات نارية",
     nameEn: "Motorcycles",
     icon: "motorcycle",
+    commerceDefault: "NOT_ELIGIBLE",
     attributes: [
       { key: "brand", labelAr: "الماركة", labelEn: "Brand", type: "TEXT", required: true },
       { key: "model", labelAr: "الموديل", labelEn: "Model", type: "TEXT" },
@@ -139,6 +147,7 @@ export const categories: CategorySeed[] = [
     nameAr: "موبايلات",
     nameEn: "Mobile Phones",
     icon: "smartphone",
+    commerceDefault: "ELIGIBLE",
     attributes: [
       { key: "brand", labelAr: "الماركة", labelEn: "Brand", type: "TEXT", required: true },
       { key: "model", labelAr: "الموديل", labelEn: "Model", type: "TEXT", required: true },
@@ -152,6 +161,7 @@ export const categories: CategorySeed[] = [
     nameAr: "إلكترونيات",
     nameEn: "Electronics",
     icon: "cpu",
+    commerceDefault: "ELIGIBLE",
     attributes: [
       { key: "brand", labelAr: "الماركة", labelEn: "Brand", type: "TEXT" },
       { key: "product_type", labelAr: "نوع المنتج", labelEn: "Product Type", type: "TEXT", required: true },
@@ -164,6 +174,7 @@ export const categories: CategorySeed[] = [
     nameAr: "أجهزة منزلية",
     nameEn: "Home Appliances",
     icon: "washing-machine",
+    commerceDefault: "ELIGIBLE",
     attributes: [
       { key: "brand", labelAr: "الماركة", labelEn: "Brand", type: "TEXT" },
       condition(),
@@ -175,6 +186,7 @@ export const categories: CategorySeed[] = [
     nameAr: "أثاث",
     nameEn: "Furniture",
     icon: "armchair",
+    commerceDefault: "ELIGIBLE",
     attributes: [
       { key: "material", labelAr: "الخامة", labelEn: "Material", type: "TEXT" },
       condition(),
@@ -185,6 +197,7 @@ export const categories: CategorySeed[] = [
     nameAr: "وظائف",
     nameEn: "Jobs",
     icon: "briefcase",
+    commerceDefault: "NOT_ELIGIBLE",
     attributes: [
       {
         key: "job_type",
@@ -209,6 +222,7 @@ export const categories: CategorySeed[] = [
     nameAr: "خدمات",
     nameEn: "Services",
     icon: "wrench",
+    commerceDefault: "NOT_ELIGIBLE",
     attributes: [
       { key: "service_type", labelAr: "نوع الخدمة", labelEn: "Service Type", type: "TEXT", required: true },
       { key: "experience_years", labelAr: "سنوات الخبرة", labelEn: "Years of Experience", type: "NUMBER" },
@@ -219,6 +233,7 @@ export const categories: CategorySeed[] = [
     nameAr: "مقاولات وبناء",
     nameEn: "Construction & Contracting",
     icon: "hard-hat",
+    commerceDefault: "NOT_ELIGIBLE",
     attributes: [
       { key: "service_type", labelAr: "نوع الخدمة", labelEn: "Service Type", type: "TEXT", required: true },
       { key: "experience_years", labelAr: "سنوات الخبرة", labelEn: "Years of Experience", type: "NUMBER" },
@@ -229,6 +244,7 @@ export const categories: CategorySeed[] = [
     nameAr: "مواد بناء",
     nameEn: "Building Materials",
     icon: "bricks",
+    commerceDefault: "ELIGIBLE",
     attributes: [
       { key: "material_type", labelAr: "نوع المادة", labelEn: "Material Type", type: "TEXT", required: true },
       {
@@ -250,6 +266,7 @@ export const categories: CategorySeed[] = [
     nameAr: "معدات ثقيلة",
     nameEn: "Heavy Equipment",
     icon: "truck",
+    commerceDefault: "NOT_ELIGIBLE",
     attributes: [
       { key: "equipment_type", labelAr: "نوع المعدة", labelEn: "Equipment Type", type: "TEXT", required: true },
       { key: "brand", labelAr: "الماركة", labelEn: "Brand", type: "TEXT" },
@@ -262,6 +279,7 @@ export const categories: CategorySeed[] = [
     nameAr: "جملة",
     nameEn: "Wholesale",
     icon: "package",
+    commerceDefault: "ELIGIBLE",
     attributes: [
       { key: "product_type", labelAr: "نوع المنتج", labelEn: "Product Type", type: "TEXT", required: true },
       { key: "min_order_quantity", labelAr: "أقل كمية للطلب", labelEn: "Minimum Order Quantity", type: "NUMBER" },
@@ -272,6 +290,7 @@ export const categories: CategorySeed[] = [
     nameAr: "رياضة",
     nameEn: "Sports",
     icon: "dumbbell",
+    commerceDefault: "ELIGIBLE",
     attributes: [
       { key: "brand", labelAr: "الماركة", labelEn: "Brand", type: "TEXT" },
       condition(),
@@ -282,6 +301,7 @@ export const categories: CategorySeed[] = [
     nameAr: "ألعاب",
     nameEn: "Games",
     icon: "gamepad",
+    commerceDefault: "ELIGIBLE",
     attributes: [
       {
         key: "platform",
@@ -303,6 +323,7 @@ export const categories: CategorySeed[] = [
     nameAr: "أخرى",
     nameEn: "Other",
     icon: "grid",
+    commerceDefault: "NOT_ELIGIBLE",
     attributes: [condition()],
   },
 ];

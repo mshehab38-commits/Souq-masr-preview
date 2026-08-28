@@ -16,3 +16,5 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+.local-storage/
+e2e/.worker-pid
