@@ -11,8 +11,7 @@ Last updated: 2026-08-28 (Phase 4 completion)
 **Phase 4 (Seller Dashboard, Stores & Inventory Management) is COMPLETE, validated, and about to be committed/pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv`
-Latest commit before this phase: `d69b031` — "Add persistent project state and architecture/database/API/decisions docs"
-(Phase 4's commit hash will be added here once pushed — see git log for the actual latest commit if this line is stale.)
+Latest commit: `0185481` — "Phase 4: seller dashboard, stores, and inventory management"
 
 Per the approved execution rule (one phase at a time, stop and wait for
 explicit approval before starting the next major phase), **this session
@@ -29,7 +28,7 @@ commission/settlement OWNER DECISION REQUIRED items are expected).
 | 1B | Design system (teal/amber brand, UI primitives, RTL) | `c92e495` | Done |
 | 2 | Phone-OTP auth, sessions, RBAC, verification requests, audit log | `9e3539e` | Done |
 | 3 | Listings, images (storage + processing pipeline), search, favorites | `e2bcff8`, `d69b031` | Done |
-| 4 | Seller dashboard, stores, bulk listing management, expiry sweep | (pending push) | **Done** |
+| 4 | Seller dashboard, stores, bulk listing management, expiry sweep | `0185481` | **Done** |
 | 5–11 | Orders, Payments, Shipping, Trust & Safety, Admin, Notifications, Observability/Launch (original 11-phase roadmap) | — | Not started |
 
 ## What Was Completed in Phase 4
@@ -159,9 +158,10 @@ None. Ready to proceed to Phase 5 pending explicit approval.
 
 ## Exact Next Action
 
-1. Commit and push Phase 4 (this file, `docs/*` updates, and all Phase 4
-   source/test files) to `claude/souq-masr-production-plan-g38qwv`.
-2. **Wait for explicit user approval before starting Phase 5**
+Phase 4 is committed (`0185481`) and pushed to
+`claude/souq-masr-production-plan-g38qwv`.
+
+**Wait for explicit user approval before starting Phase 5**
    (Orders/Checkout), per the standing execution rule. Once approved:
    read this file + `docs/*` fresh (don't rely on conversation memory),
    confirm current git state matches this document, then begin Phase 5
