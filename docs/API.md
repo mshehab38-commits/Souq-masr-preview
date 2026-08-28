@@ -229,3 +229,144 @@ object-storage credentials in dev/CI. Both handlers call
 unconditionally when `NODE_ENV === "production"` — this route can never
 serve or accept traffic in production regardless of how storage env vars
 are (mis)configured.
+
+## Orders & Checkout (Phase 5)
+
+### `POST /api/orders`
+
+Requires session + CSRF. Body: `{ listingId, paymentMethod?, shippingCompanyId?, shippingAddress?, buyerNote? }`.
+Checks out a commerce-enabled `ACTIVE` listing. Rejects with a specific
+error for every invalid state: `listing_not_found`,
+`not_checkout_enabled`, `cannot_buy_own_listing`, `price_not_set`,
+`payment_method_unavailable` (`ONLINE` requested but no live gateway is
+configured), `shipping_company_required` (a `PLATFORM_SHIPPING` listing
+with no company chosen), `shipping_rate_unavailable` (the chosen company
+has no rate for the buyer's governorate and no default fee). On success,
+snapshots `productPrice`/`shippingFee`/`shippingCommissionAmount` from
+whatever's in effect right now, reserves the listing (`SOLD`), and
+returns `{ success, orderId, redirectUrl? }` — `redirectUrl` is only
+present for a (currently unreachable, since `ONLINE` requires live
+credentials) online-payment checkout.
+
+### `GET /api/orders/[id]`
+
+Requires session. Returns the order if the caller is its buyer, seller,
+or an admin; `403` otherwise.
+
+### `GET /api/orders/buying` / `GET /api/orders/selling`
+
+Requires session. Lists the caller's own orders as a buyer or as a
+seller, respectively.
+
+### `POST /api/orders/[id]/transition`
+
+Requires session + CSRF. Body: `{ targetStatus, cancelReason? }`. Moves
+an order through the state machine
+(`src/modules/orders/state-machine.ts`): `PENDING → CONFIRMED →
+PREPARING → READY_FOR_PICKUP → PICKED_UP → IN_TRANSIT →
+OUT_FOR_DELIVERY → DELIVERED → COMPLETED`, plus
+`CANCELLED`/`FAILED`/`RETURNED`/`REFUNDED`/`DISPUTED`. The caller's role
+(buyer/seller/admin, resolved from the order's own `buyerId`/`sellerId`)
+gates which transitions are allowed; an admin can additionally override
+any transition that exists in the table for *some* actor, as a support/
+dispute-resolution capability — never one that doesn't exist at all.
+Cancelling releases the listing reservation back to `ACTIVE` with a fresh
+expiry. Reaching `COMPLETED` on an `ONLINE`-paid order creates a
+`SellerPayout` for the full `productPrice` and a matching `LedgerEntry`
+(account `SELLER_PAYABLE`) — zero commission deducted; a
+`CASH_ON_DELIVERY` order creates neither, since the platform never held
+that money.
+
+## Shipping Options (Phase 5)
+
+### `GET /api/shipping-options?governorateId=`
+
+Public. Returns every active shipping company with a resolvable fee for
+the given governorate (a company-specific `ShippingRate`, or its
+`defaultFlatFee` fallback) — exactly what the checkout page offers the
+buyer as `PLATFORM_SHIPPING` options.
+
+## Payment Webhooks (Phase 5, inert until configured)
+
+### `POST /api/webhooks/paymob`
+
+Returns `503` unless `PAYMOB_API_KEY`/`PAYMOB_INTEGRATION_ID`/
+`PAYMOB_IFRAME_ID`/`PAYMOB_HMAC_SECRET` are all set. Once configured,
+verifies the webhook's HMAC signature before updating the linked order's
+`paymentStatus` to `CAPTURED`/`FAILED`. Exists now so the route can be
+registered as Paymob's callback URL the moment real credentials are
+supplied, without a code change then.
+
+## Admin: Platform Settings (Phase 5)
+
+### `GET /api/admin/settings` / `PATCH /api/admin/settings`
+
+Admin-only (`requireAdmin()` — `403` otherwise). Reads/updates the
+`PlatformSettings` singleton: `freeListingActiveLimit`,
+`paymentProcessingFeeBearer`. Both nullable; `PATCH` accepts `null`
+explicitly to clear a previously-set value back to "not configured."
+
+## Admin: Subscription Plans (Phase 5)
+
+### `GET /api/admin/plans` / `POST /api/admin/plans`
+
+Admin-only. Lists all plans (including inactive) / creates a new plan.
+`monthlyPrice`/`yearlyPrice` default to unset — a plan is not
+purchasable until the owner sets a real price.
+
+### `PATCH /api/admin/plans/[id]` / `DELETE /api/admin/plans/[id]`
+
+Admin-only. Updates a plan's fields, or soft-deletes it (also
+deactivates it).
+
+### `POST /api/admin/subscriptions`
+
+Admin-only. Body: `{ userPhone, planId, billingCycle }`. Grants a
+subscription directly (the interim mechanism until self-serve online
+purchase exists — see `docs/DECISIONS.md`). Fails with `plan_not_priced`
+if the plan has no price set for the requested cycle, or
+`plan_not_found`/`user_not_found`. On success, records a
+`SUBSCRIPTION_REVENUE` `LedgerEntry` for the plan's price.
+
+### `DELETE /api/admin/subscriptions/[id]`
+
+Admin-only. Revokes (cancels) an active subscription.
+
+## Admin: Shipping (Phase 5)
+
+### `GET /api/admin/shipping-companies` / `POST /api/admin/shipping-companies`
+
+Admin-only. Lists all companies (including inactive) / creates a new one.
+
+### `GET /api/admin/shipping-companies/[id]` / `PATCH .../[id]` / `DELETE .../[id]`
+
+Admin-only. Fetch/update (including `defaultFlatFee`)/soft-delete a
+company.
+
+### `GET /api/admin/shipping-companies/[id]/rates` / `POST .../rates`
+
+Admin-only. Lists a company's per-governorate rates / upserts one
+(`{ governorateId, flatFee }`, both required — see `docs/DATABASE.md`
+for why the company-wide fallback is a separate field, not a nullable
+row here).
+
+### `GET /api/admin/shipping-companies/[id]/commission` / `PATCH .../commission`
+
+Admin-only. Reads/sets a company's `commissionPercent` (nullable — 0%
+platform revenue until set).
+
+### `GET /api/admin/shipping-companies/[id]/settlements` / `POST .../settlements`
+
+Admin-only. Lists a company's settlements / computes a new one for
+`{ periodStart, periodEnd }` — sums the company's `COMPLETED` orders in
+that range and posts a `SHIPPING_COMMISSION_REVENUE` ledger entry for
+the commission only.
+
+## Admin: Ledger (Phase 5)
+
+### `GET /api/admin/ledger`
+
+Admin-only. Returns `{ summary, recentEntries }` — total platform revenue
+broken down by type (subscriptions / shipping commission / promoted
+listings, never product-sale proceeds), plus the 50 most recent ledger
+rows for a raw audit view.

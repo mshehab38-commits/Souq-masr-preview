@@ -606,6 +606,7 @@ enum PaymentStatus {
 enum OrderCancelledBy {
   BUYER
   SELLER
+  ADMIN
   SYSTEM
 }
 

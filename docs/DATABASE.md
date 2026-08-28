@@ -2,8 +2,7 @@
 
 PostgreSQL 16, accessed via Prisma 6. Schema source of truth:
 `prisma/schema.prisma`. This document explains the *why* behind the
-schema; for the literal field list, read the schema file directly — it's
-kept short enough (~345 lines as of Phase 4) to read in full.
+schema; for the literal field list, read the schema file directly.
 
 ## Conventions
 
@@ -186,3 +185,93 @@ must not be restricted to business/store accounts.
   Enabled via `previewFeatures = ["postgresqlExtensions"]` in the
   generator block and `extensions = [pg_trgm]` in the datasource block —
   Prisma manages the `CREATE EXTENSION` in the relevant migration.
+
+## Financial Architecture (Phase 5)
+
+The owner's approved business model: **zero commission on product
+sales**; platform revenue comes only from subscriptions, promoted
+listings, and a commission charged *to shipping companies*. The schema
+enforces the separation between seller funds and platform revenue
+structurally, not just by convention:
+
+- **`PlatformSettings`** — a singleton row (fixed id `"singleton"`,
+  lazily created on first read) for cross-cutting config that doesn't
+  need its own table: `freeListingActiveLimit` (nullable — null means no
+  cap is enforced, never an invented number) and
+  `paymentProcessingFeeBearer` (nullable enum, irrelevant until a live
+  online payment provider exists).
+- **`SubscriptionPlan`** — admin-managed, `monthlyPrice`/`yearlyPrice`
+  both nullable (a plan with neither set can't be subscribed to — it's a
+  named placeholder, not a free trial). Benefit fields
+  (`activeListingLimit`, `imageLimitPerListing`,
+  `allowPromotedListings`, `priorityPlacement`, `geographicTargeting`,
+  `storeFeatures`) are all real, owner-editable columns — never hardcoded
+  per-plan assumptions in application code.
+- **`Subscription`** — links a `User` to a `SubscriptionPlan`.
+  `grantedBy` records which admin granted it, since self-serve online
+  purchase isn't wired yet (needs a live payment gateway — see Payments
+  below). This is a legitimate interim mechanism for early-stage B2B
+  billing (an admin grants a subscription after an offline/manual
+  payment arrangement), not a placeholder hack.
+- **`ShippingCompany`** — `defaultFlatFee` is the company-wide fallback
+  rate, deliberately **not** modeled as a nullable-`governorateId` row in
+  `ShippingRate`: Postgres unique indexes treat every `NULL` as distinct,
+  so a `(shippingCompanyId, governorateId)` unique constraint could never
+  actually enforce "at most one default row per company" that way. This
+  was caught during Phase 5 development (TypeScript's compound-key
+  typing rejected a `null` `governorateId` in a `where`-unique input
+  before it became a runtime bug) and fixed by moving the fallback here.
+- **`ShippingRate`** — one row per `(shippingCompanyId, governorateId)`
+  pair, `governorateId` and `flatFee` both required. A real, negotiated
+  courier price the owner enters — never invented by engineering. A
+  company with no rate for a governorate (and no `defaultFlatFee`) is
+  simply not offered as a checkout option there.
+- **`ShippingCommissionRule`** — one row per company, nullable
+  `commissionPercent` (0% until the owner sets a real contracted rate,
+  never a guessed percentage). This is Souq Masr's cut, owed **by** the
+  shipping company — never deducted from the seller or buyer.
+- **`ShippingSettlement`** — a periodic reconciliation
+  (`computeSettlementForPeriod`) that sums a company's `COMPLETED`
+  orders' `shippingFee`/`shippingCommissionAmount` in a date range and
+  posts exactly one `LedgerEntry` for the commission. Kept fully separate
+  from seller payouts.
+- **`Order`** — one order per checkout on a single commerce-enabled
+  listing. Every money field (`productPrice`, `shippingFee`,
+  `shippingCommissionAmount`, `paymentProcessingFee`, `totalAmount`) is
+  snapshotted at checkout time from whatever's in effect then — never
+  re-read live later, so a subsequent price/rate/rule change can never
+  retroactively alter an order in flight. `status` drives the full
+  lifecycle state machine (see `docs/API.md` and
+  `src/modules/orders/state-machine.ts`); `shippingAddress` is a JSON
+  snapshot (same pattern as `Listing.attributes`) rather than a separate
+  `Address` model, since an order's delivery details must never change
+  if the buyer's saved address later does.
+- **`SellerPayout`** — `amount` always equals `Order.productPrice`
+  exactly (zero commission). For cash-on-delivery orders — the only live
+  payment method — no row is created at all: the buyer already paid the
+  seller directly, so Souq Masr never held that money and has nothing to
+  disburse or report as a liability. Rows only exist for the (currently
+  inactive) `ONLINE` payment path.
+- **`LedgerEntry`** — the append-only financial audit trail. Every
+  caller picks `account` (`PLATFORM_REVENUE` / `SELLER_PAYABLE` /
+  `BUYER_REFUNDABLE` / `SHIPPING_COMPANY_PAYABLE`) explicitly rather than
+  having it inferred — a bug at a call site (e.g. tagging product-sale
+  proceeds as `PLATFORM_REVENUE`) is visible during code review, not
+  hidden behind "smart" logic in the ledger itself. `getLedgerSummary()`
+  aggregates only `PLATFORM_REVENUE` rows by type — it is structurally
+  impossible for a product sale to appear in that total, since nothing
+  in the codebase ever writes a product-price `LedgerEntry` tagged
+  `PLATFORM_REVENUE`.
+
+### Order lifecycle enum
+
+`OrderStatus`: `PENDING → CONFIRMED → PREPARING → READY_FOR_PICKUP →
+PICKED_UP → IN_TRANSIT → OUT_FOR_DELIVERY → DELIVERED → COMPLETED`, plus
+`CANCELLED` / `FAILED` / `RETURNED` / `REFUNDED` / `DISPUTED` as
+alternate/terminal branches. `OrderCancelledBy`
+(`BUYER`/`SELLER`/`ADMIN`/`SYSTEM`) records who triggered a cancellation
+— `ADMIN` was added in a follow-up migration
+(`20260828210000_add_admin_order_cancelled_by`) after a test caught that
+the original enum only had three values while the application's actor
+model already had four; admin overrides are audit-distinct from
+automated `SYSTEM` actions, so they were never meant to be conflated.

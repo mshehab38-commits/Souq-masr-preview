@@ -19,17 +19,33 @@ of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
 into CI. As of Phase 3: 102 modules, 259 dependencies, zero violations.
 
-Modules as of Phase 4:
+Modules as of Phase 5:
 
 - `src/modules/identity/` — auth, sessions, RBAC, phone verification
   (Phase 2).
 - `src/modules/catalog/` — listings, categories, attributes, commerce
-  eligibility, images, favorites, bulk listing actions, seller stats
-  (Phases 1, 3 & 4).
+  eligibility, images, favorites, bulk listing actions, seller stats,
+  free-listing-limit enforcement (Phases 1, 3, 4 & 5).
 - `src/modules/search/` — the `SearchProvider` abstraction and its
   Postgres implementation (Phase 3).
 - `src/modules/store/` — seller storefronts: profile, branding upload,
   public listing feed (Phase 4).
+- `src/modules/settings/` — the `PlatformSettings` singleton for
+  cross-cutting admin-configurable knobs (Phase 5).
+- `src/modules/subscriptions/` — `SubscriptionPlan` CRUD, admin-granted
+  `Subscription`s, and the active-listing-limit resolution they feed
+  (Phase 5).
+- `src/modules/shipping/` — `ShippingCompany`/`ShippingRate`/
+  `ShippingCommissionRule`/`ShippingSettlement` — modeled entirely
+  separately from seller payouts (Phase 5).
+- `src/modules/ledger/` — the single write path for every financial
+  audit-trail row, tagging each with an explicit `account` so seller
+  funds and platform revenue can never be mixed (Phase 5).
+- `src/modules/payments/` — the `PaymentProvider` abstraction:
+  `CodPaymentProvider` (live default) and `PaymobPaymentProvider` (built,
+  inert until real credentials exist) (Phase 5).
+- `src/modules/orders/` — checkout, the order state machine, and
+  role-gated transitions between its states (Phase 5).
 
 Cross-cutting concerns that don't belong to one domain live in `src/lib/`
 (`env`, `db`, `redis`, `queue-redis`, `logger`, `storage/`, `audit`,

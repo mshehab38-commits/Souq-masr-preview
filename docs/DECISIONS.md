@@ -211,3 +211,104 @@ decisions that belong to the project owner, not something to invent
 while building the technical feature. If paid tiers are wanted later,
 that's a new phase with its own OWNER DECISION REQUIRED items, layered on
 top of this model rather than requiring it to change.
+
+## Ledger accounts are chosen explicitly by the caller, never inferred
+
+`recordLedgerEntry()` (`src/modules/ledger/ledger.ts`) takes `account` as
+a required parameter rather than deriving it from `type`. The
+alternative — a lookup table mapping `SUBSCRIPTION_REVENUE` →
+`PLATFORM_REVENUE`, `SELLER_PAYOUT` → `SELLER_PAYABLE`, etc. inside the
+ledger module — would be less code at each call site, but it would also
+mean a mistake in that internal mapping silently mis-tags every entry of
+that type platform-wide, discoverable only by auditing the ledger module
+itself. Requiring each caller to state `account` explicitly means a bug
+(e.g. accidentally tagging an order's product price as
+`PLATFORM_REVENUE`) is visible in the diff of the calling code during
+review, which is exactly the code that a reviewer is already looking at
+when checking "does this respect the zero-commission model."
+
+## Cash-on-delivery is the payment default, not a stopgap
+
+`CodPaymentProvider` requires no gateway integration, no merchant
+account, and produces no processing fee at all — the buyer pays the
+seller/courier directly, and Souq Masr never holds the money for that
+order. This isn't a placeholder pending "real" payments — cash-on-delivery
+is a dominant, production-viable payment method in the Egyptian
+e-commerce market. `PaymentProvider.getPaymentProvider()` defaults to it
+and it's the only method actually reachable until real Paymob credentials
+exist (see the next decision).
+
+## Paymob is implemented but only ever selected with real credentials
+
+`PaymobPaymentProvider` (`src/modules/payments/paymob-provider.ts`) is a
+full implementation of Paymob's documented Accept API v1 flow (auth
+token → order registration → payment key → iframe redirect, plus HMAC
+webhook verification) — not a stub. But `getPaymentProvider("ONLINE")`
+throws unless `PAYMOB_API_KEY`/`PAYMOB_INTEGRATION_ID`/
+`PAYMOB_IFRAME_ID`/`PAYMOB_HMAC_SECRET` are all set, and no such
+credentials have been supplied (a production-credentials decision for
+the owner, not an engineering one). This mirrors the established
+storage-provider pattern (`R2StorageProvider` only selected when real R2
+credentials exist; `LocalStorageProvider` otherwise) — the real
+implementation exists and is ready, but is never fabricated into use
+without real secrets. **Caveat**: this has never been exercised against
+Paymob's live sandbox, since no credentials exist to test with. Verify
+the exact request/response shapes and the webhook HMAC field order
+against their current documentation before relying on it in production —
+their public API has changed shape before.
+
+## Company-wide shipping fallback lives on `ShippingCompany`, not a nullable `ShippingRate` row
+
+The original design used `ShippingRate.governorateId: String?`, with a
+`null` value meaning "this company's default rate for any governorate
+without a specific one." The `@@unique([shippingCompanyId,
+governorateId])` constraint was meant to guarantee at most one such
+default row per company — but Postgres unique indexes treat every `NULL`
+as a distinct value, so that constraint could never have actually
+enforced it; a second `null`-governorate row for the same company would
+have inserted without conflict, silently breaking the "one default"
+invariant the code assumed. This was caught before it ever ran against a
+real database: Prisma's generated TypeScript types for the compound
+`where`-unique input reject a `null` `governorateId`, since Prisma itself
+knows this key can't reliably identify one row when null is involved.
+Fixed by moving the fallback to `ShippingCompany.defaultFlatFee` — a
+genuinely singular field on a genuinely singular row — and making
+`ShippingRate.governorateId` (and `flatFee`) required, so the compound
+unique key now does what it always should have (migration
+`fix_shipping_rate_default_fee_design`). General lesson: a nullable
+column inside a composite unique constraint is very rarely the right way
+to model "the default case" in Postgres — model the default as its own
+field on the parent instead.
+
+## Admin-driven configuration got a real UI now, not deferred to the Admin phase
+
+`/admin/{settings,plans,shipping,ledger}` are full, usable pages in this
+phase, not just API routes waiting for a later "Admin" phase to add a
+UI. The reasoning: every one of these values (free-listing limit,
+subscription prices, shipping rates/commission) is something the owner
+needs to actually set to run the business *today* — building the API
+without a way to call it (short of raw HTTP requests) wouldn't meet the
+spirit of "the owner must be able to configure this without a code
+change." The later, broader Admin phase (Phase 9/10 in the original
+roadmap) is about user/listing moderation and platform operations, not
+about un-blocking basic commercial configuration that can't wait that
+long.
+
+## `OrderCancelledBy` needed its own `ADMIN` value, not reuse of `SYSTEM`
+
+The order state machine (`src/modules/orders/state-machine.ts`) always
+treated `ADMIN` as a distinct actor from `SYSTEM` — an admin's override
+is a human support/dispute-resolution action; `SYSTEM` is reserved for
+fully automated transitions (e.g. a future live courier webhook marking
+`PICKED_UP`). But the `OrderCancelledBy` enum only had
+`BUYER`/`SELLER`/`SYSTEM`, so `transitions.ts`'s (already-correct)
+`cancelledBy = actor === "SYSTEM" ? "SYSTEM" : actor` logic crashed with
+a Prisma validation error the first time an admin actually cancelled an
+order — caught by a test
+(`tests/orders/transitions.test.ts`), not by manual testing, since the
+manual verification pass earlier in this phase happened not to exercise
+that specific actor. Fixed by adding `ADMIN` to the enum rather than
+mapping admin actions onto `SYSTEM`, since conflating "a person
+intervened" with "this happened automatically" would make the audit
+trail actively misleading for exactly the cases (disputes, support
+overrides) where an accurate record matters most.

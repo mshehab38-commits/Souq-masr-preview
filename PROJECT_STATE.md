@@ -4,23 +4,26 @@
 > `git log`) at the start of every session instead of relying on prior
 > conversation memory.
 
-Last updated: 2026-08-28 (Phase 5 blocked pending owner financial decisions)
+Last updated: 2026-08-28 (Phase 5 completion)
 
 ## Current Status
 
-**Phase 4 (Seller Dashboard, Stores & Inventory Management) is COMPLETE, validated, committed, and pushed.** Code state is unchanged since that push — this update is documentation-only.
+**Phase 5 (Orders, Checkout, Payments, Shipping, Subscriptions) is
+COMPLETE, validated, committed, and pushed.**
 
-Branch: `claude/souq-masr-production-plan-g38qwv`
-Latest commit: `0d2bb0e` — "Record Phase 4 commit hash in PROJECT_STATE.md"
+Branch: `claude/souq-masr-production-plan-g38qwv` (the branch with all
+real engineering work — the GitHub `main` branch has only ever held the
+original prototype upload and is not where this project lives).
+Latest commit: see `git log -1` — two Phase 5 commits landed this round
+(the implementation, then this test/docs completion pass).
 
-**Phase 5 (Orders/Checkout) implementation is explicitly BLOCKED.** The
-owner asked to see all financial/commercial decisions Phase 5 depends on
-*before* any Phase 5 code is written, per the standing rule that the
-engineer must never invent a financial value. No Phase 5 schema, module,
-route, or page has been started. See "Phase 5 Blocking Decisions" below
-for the full list awaiting owner sign-off, and the chat transcript around
-2026-08-28 for the complete decision write-up (options, impact, storage
-needs, and RECOMMENDATION-ONLY engineering suggestions for each).
+**A note on how this branch got here**: this session began with the user
+worried the project might be lost, because GitHub's default view showed
+only `tamam-standalone.html`. That's simply `main` — every real commit
+(Phases 1 through 5) has always lived on `claude/souq-masr-production-
+plan-g38qwv` instead, and was already safely pushed. Nothing was ever
+lost; this is noted here so a future session doesn't waste time
+re-investigating the same non-issue.
 
 ## Phase History
 
@@ -31,174 +34,263 @@ needs, and RECOMMENDATION-ONLY engineering suggestions for each).
 | 1B | Design system (teal/amber brand, UI primitives, RTL) | `c92e495` | Done |
 | 2 | Phone-OTP auth, sessions, RBAC, verification requests, audit log | `9e3539e` | Done |
 | 3 | Listings, images (storage + processing pipeline), search, favorites | `e2bcff8`, `d69b031` | Done |
-| 4 | Seller dashboard, stores, bulk listing management, expiry sweep | `0185481` | **Done** |
-| 5–11 | Orders, Payments, Shipping, Trust & Safety, Admin, Notifications, Observability/Launch (original 11-phase roadmap) | — | Not started |
+| 4 | Seller dashboard, stores, bulk listing management, expiry sweep | `0185481` | Done |
+| 5 | Orders, checkout, payments abstraction, shipping model, subscriptions, ledger | `6bb0f47` + this session's follow-up | **Done** |
+| 6–11 | Trust & Safety, Admin (broader), Notifications, Observability/Launch (remaining roadmap) | — | Not started |
 
-## What Was Completed in Phase 4
+## Approved Business Model (governs all of Phase 5)
 
-- **`Store` data model**: one optional public storefront per seller
-  (`ownerId` unique — individual and business sellers alike, not gated to
-  `BUSINESS` role), globally unique server-generated `slug`, `name`,
-  `description`, `logoUrl`, `coverUrl`. Migration
-  `20260828160000_add_stores`. No pricing/subscription fields — a free
-  branding surface in this phase (see `docs/DECISIONS.md`).
-- **`store` module** (`src/modules/store/`): `createStore`, `updateStore`,
-  `getStoreByOwnerId`, `getStoreBySlug`, `listStorePublicListings`
-  (queries `Listing` by `ownerId` + `status=ACTIVE`, no `storeId` FK
-  needed given the 1:1 relationship), `generateStoreSlug` (ASCII base +
-  random 8-hex suffix, Arabic-safe fallback), `uploadStoreBranding`
-  (synchronous resize/re-encode via `sharp`, reusing `StorageProvider`
-  and the listing pipeline's magic-byte check — not queued through
-  BullMQ, unlike listing photos).
-- **Bulk listing management** (`src/modules/catalog/listings.ts`):
-  `bulkUpdateListings(ownerId, listingIds, action)` for `mark_sold` /
-  `delete` / `relist`, every action scoped to the caller's own listings
-  in the `WHERE` clause itself; `renewListing` for reviving an
-  `ACTIVE`/`EXPIRED` listing; `getSellerStats` (active/sold/expired
-  counts, total views, favorites received) for the dashboard.
-- **Listing expiry**: `createListing` now actually sets `expiresAt`
-  (`LISTING_LIFETIME_MS`, 60 days — a technical default, not a pricing
-  decision) — this field existed since Phase 3 but nothing populated it
-  until now. A new `listing-expiry` BullMQ repeatable job
-  (`sweepExpiredListings`, every 15 minutes) flips `ACTIVE` listings past
-  `expiresAt` to `EXPIRED`; search already filters to `status=ACTIVE` at
-  query time, so no re-indexing step is needed on expiry.
-- **API routes**: `POST /api/stores`, `GET/PATCH /api/stores/mine`,
-  `POST /api/stores/mine/branding?kind=logo|cover`, `GET
-  /api/stores/[slug]`, `POST /api/listings/bulk`, `POST
-  /api/listings/[id]/renew`.
-- **Pages**: `/dashboard` (seller stats + store CTA + quick links),
-  `/dashboard/store` (create/edit store + branding upload via
-  `StoreSettingsForm.tsx`), `/store/[slug]` (public storefront with
-  branding header + paginated active-listing grid), `/listings/mine`
-  gained bulk-select checkboxes (`MyListingsClient.tsx`) wired to the new
-  bulk endpoint. `SiteHeader` gained a "لوحة التحكم" (Dashboard) link.
-- **Refactor**: extracted the `csrfHeaders()` helper (previously
-  duplicated in `ListingDetailActions.tsx` and `ListingImageUploader.tsx`)
-  into `src/lib/csrf-headers.ts`.
+The owner approved this model explicitly before Phase 5 began — it is not
+an engineering assumption:
+
+1. **Zero commission on product sales.** Souq Masr never deducts anything
+   from a seller's agreed price. `SellerPayout.amount` always equals
+   `Order.productPrice` exactly.
+2. **Platform revenue comes only from**: seller/business subscriptions,
+   paid/promoted listings (data model exists; self-serve purchase flow
+   not built yet — see Deferred below), and a commission charged **to
+   shipping companies** (never to sellers or buyers) on shipments
+   fulfilled through the platform.
+3. **Shipping commission is admin-configurable per company**, never
+   hardcoded, and defaults to 0% until the owner enters a real contracted
+   rate.
+4. **Free users get a configurable maximum active-listing count**,
+   enforced by `resolveActiveListingLimit()`; unconfigured = unlimited
+   (fails open, never an invented cap).
+5. **Business/seller subscriptions are fully admin-configurable**
+   (name, price, listing/image limits, promoted-listing/priority flags,
+   geographic targeting, store features) — nothing hardcoded in
+   application code.
+6. **Financial architecture**: product-sale proceeds are never treated as
+   platform revenue; every money movement is tagged in a `LedgerEntry`
+   with an explicit `account` (`PLATFORM_REVENUE` / `SELLER_PAYABLE` /
+   `BUYER_REFUNDABLE` / `SHIPPING_COMPANY_PAYABLE`) so the two can never
+   be mixed in the data model itself, not just by convention.
+
+## What Was Completed in Phase 5
+
+- **Data model** (`prisma/schema.prisma`, 4 migrations this phase):
+  `PlatformSettings` (singleton, nullable fail-open config),
+  `SubscriptionPlan` + `Subscription`, `ShippingCompany` +
+  `ShippingRate` (per-governorate) + `ShippingCommissionRule` +
+  `ShippingSettlement`, `Order` (full state machine + money snapshots),
+  `SellerPayout`, `LedgerEntry`. See `docs/DATABASE.md` for the complete
+  entity writeup.
+- **`settings` module**: `getPlatformSettings`/`updatePlatformSettings` —
+  a lazily-created singleton row, every field nullable/fail-open.
+- **`subscriptions` module**: plan CRUD, `grantSubscription` (admin-only
+  for now — no live payment gateway exists for self-serve purchase),
+  `resolveActiveListingLimit` (subscription plan limit overrides the
+  platform free-tier default; both can be `null` = unlimited).
+- **`shipping` module**: company CRUD, per-governorate rate management
+  with a company-level `defaultFlatFee` fallback, commission rules
+  (nullable %, 0 until set), and settlement computation that sums a
+  company's completed orders in a period and posts exactly one
+  `SHIPPING_COMMISSION_REVENUE` ledger entry for the commission only.
+- **`ledger` module**: `recordLedgerEntry` (the single write path — callers
+  pick `account` explicitly, never inferred), `listLedgerEntries`,
+  `getLedgerSummary` (platform revenue by type, for the admin dashboard).
+- **`payments` module**: `PaymentProvider` abstraction. `CodPaymentProvider`
+  is the live default (cash-on-delivery — no gateway needed, matches the
+  Egyptian market). `PaymobPaymentProvider` is built to their documented
+  Accept API v1 flow but is only ever selected once real `PAYMOB_*`
+  credentials exist (a production-credentials decision for the owner,
+  never fabricated) — see `docs/DECISIONS.md` and the module's own
+  comments (no dedicated `docs/PAYMENTS.md` was needed; everything is
+  already documented there and in `docs/API.md`).
+- **`orders` module**: the full state machine (Pending → Confirmed →
+  Preparing → Ready for Pickup → Picked Up → In Transit → Out for
+  Delivery → Delivered → Completed, plus Cancelled/Failed/Returned/
+  Refunded/Disputed) with role-gated transitions (buyer/seller/admin/
+  system). Checkout snapshots `productPrice`/`shippingFee`/
+  `shippingCommissionAmount` at order time — never re-read live later.
+  Placing an order reserves the listing (`SOLD`); cancelling releases it
+  back to `ACTIVE` with a fresh expiry.
+- **API routes**: `/api/orders` (+ `/buying`, `/selling`, `/[id]`,
+  `/[id]/transition`), `/api/shipping-options`, `/api/webhooks/paymob`
+  (inert until configured), and a full `/api/admin/*` surface (`settings`,
+  `plans`, `subscriptions`, `shipping-companies` + rates/commission/
+  settlements, `ledger`).
+- **UI**: `/listings/[id]/checkout`, `/orders`, `/orders/[id]` (with
+  role-appropriate action buttons), `/dashboard/orders`, and
+  `/admin/{settings,plans,shipping,ledger}` — a real, usable admin
+  console for every configurable value, not just an API surface.
+- **Free-listing-limit enforcement** wired into `createListing` (fails
+  open when unconfigured).
+
+## Bug Found and Fixed This Session
+
+**`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
+cancellation logic (`data.cancelledBy = actor === "SYSTEM" ? "SYSTEM" :
+actor`) was correct, but the Prisma enum only had `BUYER`/`SELLER`/
+`SYSTEM` — an admin-initiated cancellation crashed with a Prisma
+validation error. Caught by a new automated test
+(`tests/orders/transitions.test.ts`, "admin can cancel from any
+actor-restricted state as an override") that the prior session hadn't
+written yet. Fixed by adding `ADMIN` to the enum
+(migration `20260828210000_add_admin_order_cancelled_by`) rather than
+conflating admin overrides with automated system actions — they're
+audit-distinct. No application code change was needed once the enum was
+correct.
+
+Also fixed during schema design (before this bug, same general class of
+issue): the original `ShippingRate` design used a nullable `governorateId`
+to represent a company-wide default rate, relying on
+`@@unique([shippingCompanyId, governorateId])` to enforce "at most one
+default per company." Postgres unique indexes treat every `NULL` as
+distinct, so that constraint could never have actually enforced
+uniqueness for the null case — caught by TypeScript rejecting a null
+`governorateId` in the compound-key `where` input before it became a
+runtime bug. Fixed by moving the fallback rate onto
+`ShippingCompany.defaultFlatFee` directly and making
+`ShippingRate.governorateId` required (migration
+`fix_shipping_rate_default_fee_design`).
 
 ## Database
 
-- 6 migrations applied, schema at `prisma/schema.prisma` (~345 lines).
-  See `docs/DATABASE.md` for full entity documentation, including the new
-  `Store` entity and `Listing.expiresAt` lifecycle.
+- 10 migrations applied, schema at `prisma/schema.prisma`. See
+  `docs/DATABASE.md` for full entity documentation.
 
-## Tests & Results (last run: this session, all green)
+## Tests & Results (this session, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (120 modules, 338 dependencies).
-- `npm test` — **103/103 unit tests passing** across 17 files (added:
-  `tests/store/slug.test.ts`, `tests/store/store.test.ts`,
-  `tests/catalog/bulk-actions.test.ts`, `tests/jobs/listing-expiry.test.ts`).
-- `npx playwright test` — **3/3 e2e specs passing**: `auth-signup.spec.ts`,
-  `listing-search-flow.spec.ts`, and new `store-management-flow.spec.ts`
-  (create store → view public storefront → bulk-mark-sold → confirm the
-  listing drops off the storefront).
-- `npm run build` — clean production build (34 routes, up from 21).
-- Manual end-to-end verification via curl + a real browser: store
-  creation, logo/cover upload, public storefront rendering (with the
-  actual uploaded image), bulk mark-sold, relist, and renew all confirmed
-  working against the real dev DB before writing automated tests.
+- `npm run boundaries` — no violations (174 modules, 552 dependencies).
+- `npm test` — **191/191 unit tests passing** across 24 files. New this
+  phase: `tests/settings/settings.test.ts`,
+  `tests/subscriptions/subscriptions.test.ts`,
+  `tests/shipping/shipping.test.ts`, `tests/ledger/ledger.test.ts`,
+  `tests/orders/{state-machine,checkout,transitions}.test.ts` (88 new
+  tests). Cleanup blocks in these new suites are deliberately scoped by
+  relation (e.g. `{ order: { sellerId: { in: createdUserIds } } }`)
+  rather than by broad `{ fieldId: { not: null } }` filters, since
+  Vitest runs test files in parallel against the same real database —
+  an unscoped cleanup in one file could otherwise delete rows another
+  file's concurrently-running assertions depend on.
+- `npx playwright test` — **4/4 e2e specs passing**: `auth-signup.spec.ts`,
+  `listing-search-flow.spec.ts`, `store-management-flow.spec.ts`, and new
+  `checkout-flow.spec.ts` (seller creates a commerce-enabled listing →
+  buyer checks out via the real UI → order created with the full price,
+  no shipping fee, `CASH_ON_DELIVERY` → listing reserved (`SOLD`) → zero
+  ledger entries, proving the zero-commission guarantee at the UI layer,
+  not just the module layer).
+- `npm run build` — clean production build (43 routes, up from 34).
+- Manually verified end-to-end (via curl and a real browser, across this
+  session and the one before it): full COD order lifecycle produces zero
+  ledger entries; a `PLATFORM_SHIPPING` order correctly snapshots the
+  governorate-specific fee and commission; a computed shipping settlement
+  produces exactly one `SHIPPING_COMMISSION_REVENUE` ledger entry for the
+  commission only (not the full shipping fee); free-listing-limit
+  enforcement and its subscription override both work; unpriced plans/
+  unset commission rates correctly block rather than default to an
+  invented number; the admin console pages
+  (`/admin/{settings,plans,shipping,ledger}`) render and function
+  correctly, including the "⚠️ not yet configured" fail-open messaging.
 
 ## Known Issues
 
-### Fixed this session
-
-- **`src/worker.ts` crashed silently on startup after adding the third
-  worker.** Using a top-level `await` to start `createListingExpiryWorker()`
-  (which itself awaits a `queue.add()` call) compiled fine under `tsc`
-  but crashed at runtime: `tsx` transpiles this entrypoint to CJS (no
-  `"type": "module"` in `package.json`), and esbuild's CJS output
-  doesn't support top-level `await`. Because `e2e/global-setup.ts` spawns
-  the worker with `stdio: "ignore"`, the crash was invisible — it
-  surfaced only as `listing-search-flow.spec.ts` timing out waiting for
-  an image-processing job that was never actually running (the
-  previously-passing Phase 3 e2e test started failing again as a
-  regression from this session's changes). Root-caused by running `npm
-  run worker` directly, which showed the `ERR_REQUIRE_ASYNC_MODULE` error
-  immediately. **Fix**: wrapped all startup logic in `async function
-  main()` called with `.catch()`. Verified via direct `npm run worker`
-  run (starts cleanly, logs "Workers started") and the full Playwright
-  suite going back to 3/3 passing. See `docs/DECISIONS.md` for the full
-  writeup and the general lesson for any future `tsx`-run entrypoint.
-
 ### Open
 
-- None currently known.
+- None. (The `OrderCancelledBy` and `ShippingRate` issues above were
+  found and fixed within this same development pass, never shipped.)
 
-## Technical/Architecture Decisions (Phase 4)
+### Deferred (not bugs — explicit scope decisions)
+
+- **Self-serve online subscription purchase** isn't wired — it needs a
+  live payment gateway, which needs real Paymob credentials (a
+  production-credentials decision for the owner). Until then, an admin
+  grants subscriptions directly (`POST /api/admin/subscriptions`), a
+  legitimate pattern for early-stage B2B billing, not a placeholder hack.
+- **Self-serve promoted-listing purchase** has no UI/checkout flow yet —
+  same live-gateway dependency. The revenue-model groundwork
+  (`SubscriptionPlan.allowPromotedListings`,
+  `LedgerEntryType.PROMOTED_LISTING_REVENUE`) exists so this can be added
+  without a schema change later.
+- **Live courier API integration** (automatic `PICKED_UP`/`IN_TRANSIT`/
+  `OUT_FOR_DELIVERY` status updates from a real shipping company's API)
+  doesn't exist — those states are currently admin/seller-driven
+  placeholders in the state machine, exactly where a future Shipping
+  Provider abstraction would report status automatically.
+- **Paymob integration is unverified against their live sandbox** — built
+  to their documented Accept API v1 request/response shapes from
+  training knowledge, but has never actually been exercised, since no
+  real credentials exist. Verify the exact request/response shape and
+  the webhook HMAC field order against Paymob's current sandbox before
+  relying on it in production.
+
+## Technical/Architecture Decisions (Phase 5)
 
 See `docs/DECISIONS.md` for full rationale. Summary:
 
-- Store slugs always get a random suffix (never an incrementing counter)
-  since Arabic store names often have no ASCII content to build a
-  meaningful slug from anyway.
-- Branding image uploads are synchronous (not queued through BullMQ),
-  unlike listing photos — low volume, and the settings page needs the
-  result immediately.
-- `worker.ts` must wrap startup in an async function, never use
-  top-level `await` — `tsx`'s CJS transpilation of entrypoints doesn't
-  support it, and the failure mode is silent under how `global-setup.ts`
-  spawns it.
-- Storefronts carry zero pricing/subscription fields by design — a free
-  feature in this phase, with paid tiers (if ever wanted) deferred to a
-  future phase with its own OWNER DECISION REQUIRED items.
+- Every LedgerEntry's `account` is chosen explicitly by the caller, never
+  inferred by the ledger module — a caller bug (e.g. tagging product-sale
+  proceeds as `PLATFORM_REVENUE`) is visible at the call site during
+  review, not hidden behind "smart" logic.
+- Cash-on-delivery is the payment default specifically because it
+  requires zero gateway integration and matches how a large share of
+  Egyptian e-commerce actually transacts today — not a stopgap, a real
+  production-viable choice.
+- Company-wide shipping-rate fallback lives on `ShippingCompany` itself,
+  not as a nullable-governorate row in `ShippingRate`, because Postgres
+  can't enforce "at most one" across NULL values in a unique index.
+- Admin-driven configuration (settings/plans/shipping) got a real UI in
+  this phase, not just an API, since the owner needs to actually run the
+  business today — it wasn't deferred to the later, broader Admin phase.
 
-## OWNER DECISION REQUIRED — Phase 5 Blocking Decisions
+## OWNER DECISION REQUIRED — Resolved
 
-Phase 4 itself introduced no financial logic (storefronts are free; the
-60-day listing lifetime is a technical/UX default, not a monetization
-lever). Phase 5 (Orders/Checkout) is different: the `Order` schema and
-state machine cannot be designed correctly without these decisions —
-building it on invented placeholder values would mean a breaking
-migration and reconciliation mess once real values are set. **None of
-the 9 items below have been decided. No Phase 5 code exists.** Full
-option/impact/storage/recommendation write-up for each was delivered in
-chat on 2026-08-28 — this table is the tracking summary, not a
-replacement for that detail.
+The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
+**resolved** by the owner's approved zero-commission business model
+(see "Approved Business Model" above), which supersedes the original
+framing of those 9 items (most were premised on a commission existing at
+all, which the owner ruled out entirely):
 
-| # | Decision | Blocks Phase 5? | Status |
-|---|---|---|---|
-| D1 | Commission rate structure (% and/or scope: global/category/tier) | Yes | Awaiting owner |
-| D2 | Additional fixed platform fee (on top of/instead of commission %) | Yes | Awaiting owner |
-| D3 | Seller payout mechanics (minimum threshold, payout schedule/method) | Yes | Awaiting owner |
-| D4 | Settlement timing / holding period after delivery | Yes | Awaiting owner |
-| D5 | Payment processing fee treatment (platform/seller/buyer absorbs it) | Yes | Awaiting owner |
-| D6 | Shipping fee structure for `PLATFORM_SHIPPING` orders | Yes | Awaiting owner |
-| D7 | Cancellation fee policy (buyer-initiated / seller-initiated) | Yes | Awaiting owner |
-| D8 | Refund fee treatment (is the processing fee/commission refunded too) | Yes | Awaiting owner |
-| D9 | Taxes/VAT treatment on commission — **recommend involving a tax advisor** | Yes | Awaiting owner |
-| D10 | Subscription pricing (paid store/seller tiers) | No — deferrable | Not urgent |
-| D11 | Promoted listing pricing (paid boosted placement) | No — deferrable | Not urgent, future phase |
+- **D1/D2 (commission/platform fee on sales)**: resolved — zero, by
+  explicit owner decision. Not configurable-to-nonzero; the code has no
+  commission concept on product sales at all.
+- **D3/D4 (seller payout mechanics/timing)**: not yet relevant in
+  practice — COD orders never have platform-held funds to pay out.
+  `SellerPayout`/ledger code exists and is tested for the future ONLINE
+  path, but nothing to configure until a live gateway exists.
+- **D5 (payment processing fee bearer)**: modeled as
+  `PlatformSettings.paymentProcessingFeeBearer`, nullable, no effect
+  today (no gateway fee exists for COD). Still open for whenever Paymob
+  goes live — not urgent.
+- **D6 (shipping fee structure)**: resolved architecturally — per-company,
+  per-governorate `ShippingRate` (+ company-level default), fully
+  admin-configurable, exactly matching the owner's explicit requirement
+  ("assigning orders to contracted shipping companies according to
+  destination/governorate/coverage").
+- **D7/D8 (cancellation/refund fee policy)**: not built — cancellation is
+  currently free for both parties (Trust & Safety territory); revisit
+  once real cancellation-abuse data exists.
+- **D9 (taxes/VAT)**: still not engineering's call — no tax field exists
+  in the schema; involve a tax advisor before this is ever needed.
+- **D10 (subscription pricing)**: resolved architecturally — plans are
+  fully admin-configurable with real prices set by the owner in
+  `/admin/plans`, never hardcoded. No specific prices have been set yet;
+  that's the owner's ongoing operational decision, not a blocker.
+- **D11 (promoted listing pricing)**: data model exists
+  (`allowPromotedListings`, `PROMOTED_LISTING_REVENUE`); no purchase flow
+  yet (see Deferred above) — still not urgent.
 
-Engineering has NOT chosen or defaulted any of D1–D9 in code. Nothing in
-the repository currently reflects a commission rate, fee amount, payout
-schedule, shipping fee, cancellation/refund policy, or tax rate — those
-concepts don't exist anywhere in the schema yet, by design, until D1–D9
-are answered.
+**No new OWNER DECISION REQUIRED items are open right now.** Nothing in
+Phase 5 required inventing a financial value; every configurable field
+defaults to null/0/fail-open until the owner sets it via the admin
+console.
 
 ## Blockers
 
-**Phase 5 implementation is blocked** on the owner deciding D1–D9 above.
-This is the only blocker; there is no technical obstacle. D10/D11 do not
-block Phase 5 and can be decided whenever convenient.
+None.
 
 ## Exact Next Action
 
-1. **Wait for the owner to answer D1–D9** (D10/D11 optional, can be
-   answered later). No Phase 5 schema/module/route/page work starts
-   before that.
-2. Once answered: record the exact chosen values/structures in this file
-   under a new "Phase 5 Financial Configuration" section and in
-   `docs/DECISIONS.md`/a new `docs/PAYMENTS.md` or `docs/ORDERS.md` as
-   appropriate, encode them as configurable settings (never hardcoded
-   literals) per the standing rule, then begin Phase 5 design/
-   implementation: `Order` schema with commission/fee snapshot fields,
-   the state machine (Pending→Confirmed→Preparing→Ready for Pickup→
-   Picked Up→In Transit→Out for Delivery→Delivered→Completed, plus
-   Cancelled/Failed/Returned/Refunded/Disputed), checkout flow from a
-   commerce-enabled listing, and a seller payout ledger.
-3. Read this file + `docs/*` fresh at the start of that session (don't
-   rely on conversation memory) and confirm current git state matches
-   this document before writing any code.
+Phase 5 is committed and pushed. Per the standing execution rule
+(one phase at a time, validate, stop for approval), **this session stops
+here** — awaiting the owner's direction on what to build next: options
+include Trust & Safety/moderation, the broader Admin phase (user/listing
+management beyond what Phase 5 already built for commercial config),
+Notifications, or filling in one of the "Deferred" items above (e.g.
+wiring real Paymob credentials once the owner has them). Read this file +
+`docs/*` fresh at the start of that session and confirm current git state
+matches this document before writing any code.
