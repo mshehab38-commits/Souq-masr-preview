@@ -3,7 +3,7 @@
 PostgreSQL 16, accessed via Prisma 6. Schema source of truth:
 `prisma/schema.prisma`. This document explains the *why* behind the
 schema; for the literal field list, read the schema file directly — it's
-kept short enough (324 lines as of Phase 3) to read in full.
+kept short enough (~345 lines as of Phase 4) to read in full.
 
 ## Conventions
 
@@ -39,6 +39,7 @@ kept short enough (324 lines as of Phase 3) to read in full.
    index on `Listing.searchText`.
 5. `20260828101500_add_category_commerce_default` — adds
    `Category.commerceDefault`.
+6. `20260828160000_add_stores` — adds `Store` (Phase 4).
 
 ### Generating a new migration (non-interactive environments)
 
@@ -120,7 +121,14 @@ migration.
   title + description, kept current by an async BullMQ job
   (`search-indexing.ts`) rather than computed synchronously on write.
   Indexed on `categoryId`, `ownerId`, `status`, `governorateId`, `price`,
-  and a GIN `pg_trgm` index on `searchText` for fuzzy search.
+  and a GIN `pg_trgm` index on `searchText` for fuzzy search. `expiresAt`
+  is set on every create/relist/renew (`LISTING_LIFETIME_MS`, currently 60
+  days — a technical default, not a pricing decision) and enforced by the
+  `listing-expiry` BullMQ repeatable job (`sweepExpiredListings`, Phase 4),
+  which flips `ACTIVE` listings past `expiresAt` to `EXPIRED`. Search
+  already filters to `status = 'ACTIVE'` at query time, so an expired
+  listing disappears from search the moment the sweep runs — no
+  re-indexing step needed.
 - **`ListingImage`** — one row per uploaded image. Created in `PENDING`
   status pointing at the just-uploaded `originalKey`; the image-processing
   worker fills in `thumbnailUrl`/`mediumUrl`/`fullUrl` and flips status to
@@ -129,6 +137,28 @@ migration.
 - **`SavedSearch`** — `query` is a `Json` blob of the search filters as
   the user last configured them; no notification/alert delivery yet
   (future phase).
+
+### Seller Storefronts (Phase 4)
+
+- **`Store`** — one optional public storefront per seller (`ownerId`
+  unique), available to individual and business sellers alike, not gated
+  to `User.role === BUSINESS`. `slug` is unique and globally generated
+  (`generateStoreSlug`): an ASCII-reducible base from the store name (or a
+  generic `store-` fallback for names that don't reduce to any ASCII/digit
+  characters, which is common for Arabic-only names) plus a random 8-hex
+  suffix, so slug uniqueness never depends on a read-then-write
+  check-and-increment race. `logoUrl`/`coverUrl` point at branding images
+  uploaded through the same `StorageProvider` used for listing photos, but
+  resized synchronously in the request (`uploadStoreBranding`) rather than
+  through the async BullMQ pipeline — branding images are small,
+  low-volume, and the settings page needs the result immediately. No
+  pricing/subscription fields exist on this model: a storefront is a free
+  branding surface in this phase, not a paid tier (that would be a future
+  OWNER DECISION REQUIRED item, not something to invent here). A store's
+  public listings are resolved by querying `Listing` on `ownerId` +
+  `status = 'ACTIVE'` (`listStorePublicListings`) rather than via a
+  `storeId` foreign key on `Listing` — the 1:1 owner-to-store relationship
+  makes a direct FK unnecessary.
 
 ## Commerce Eligibility Model
 

@@ -3,12 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
-import { readCookie } from "@/lib/client-cookies";
-import { CSRF_COOKIE_NAME } from "@/lib/cookie-names";
-
-function csrfHeaders(): HeadersInit {
-  return { "Content-Type": "application/json", "x-csrf-token": readCookie(CSRF_COOKIE_NAME) ?? "" };
-}
+import { csrfHeaders } from "@/lib/csrf-headers";
 
 interface ListingDetailActionsProps {
   listingId: string;

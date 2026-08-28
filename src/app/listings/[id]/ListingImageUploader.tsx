@@ -2,12 +2,7 @@
 
 import { useState, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
-import { readCookie } from "@/lib/client-cookies";
-import { CSRF_COOKIE_NAME } from "@/lib/cookie-names";
-
-function csrfHeaders(): HeadersInit {
-  return { "Content-Type": "application/json", "x-csrf-token": readCookie(CSRF_COOKIE_NAME) ?? "" };
-}
+import { csrfHeaders } from "@/lib/csrf-headers";
 
 export function ListingImageUploader({ listingId }: { listingId: string }) {
   const router = useRouter();

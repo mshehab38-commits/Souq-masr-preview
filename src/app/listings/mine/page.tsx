@@ -2,20 +2,8 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "@/modules/identity/service";
 import { listListingsByOwner } from "@/modules/catalog/service";
-import { Card } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
-import { PriceTag } from "@/components/ui/PriceTag";
 import { EmptyState } from "@/components/ui/States";
-
-const STATUS_LABELS: Record<string, string> = {
-  DRAFT: "مسودة",
-  PENDING_REVIEW: "قيد المراجعة",
-  ACTIVE: "نشط",
-  SOLD: "تم البيع",
-  EXPIRED: "منتهي",
-  REJECTED: "مرفوض",
-  REMOVED: "محذوف",
-};
+import { MyListingsClient } from "./MyListingsClient";
 
 export default async function MyListingsPage() {
   const user = await getCurrentUser();
@@ -37,21 +25,14 @@ export default async function MyListingsPage() {
       {listings.length === 0 ? (
         <EmptyState title="لا توجد إعلانات بعد" description="ابدأ بإضافة أول إعلان لك" />
       ) : (
-        <div className="flex flex-col gap-3">
-          {listings.map((listing) => (
-            <Link key={listing.id} href={`/listings/${listing.id}`}>
-              <Card className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-neutral-900">{listing.title}</p>
-                  {listing.price && <PriceTag amount={Number(listing.price)} size="sm" />}
-                </div>
-                <Badge tone={listing.status === "ACTIVE" ? "success" : "neutral"}>
-                  {STATUS_LABELS[listing.status]}
-                </Badge>
-              </Card>
-            </Link>
-          ))}
-        </div>
+        <MyListingsClient
+          listings={listings.map((listing) => ({
+            id: listing.id,
+            title: listing.title,
+            price: listing.price ? Number(listing.price) : null,
+            status: listing.status,
+          }))}
+        />
       )}
     </main>
   );

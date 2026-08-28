@@ -19,19 +19,22 @@ of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
 into CI. As of Phase 3: 102 modules, 259 dependencies, zero violations.
 
-Modules as of Phase 3:
+Modules as of Phase 4:
 
 - `src/modules/identity/` — auth, sessions, RBAC, phone verification
   (Phase 2).
 - `src/modules/catalog/` — listings, categories, attributes, commerce
-  eligibility, images, favorites (Phases 1 & 3).
+  eligibility, images, favorites, bulk listing actions, seller stats
+  (Phases 1, 3 & 4).
 - `src/modules/search/` — the `SearchProvider` abstraction and its
   Postgres implementation (Phase 3).
+- `src/modules/store/` — seller storefronts: profile, branding upload,
+  public listing feed (Phase 4).
 
 Cross-cutting concerns that don't belong to one domain live in `src/lib/`
 (`env`, `db`, `redis`, `queue-redis`, `logger`, `storage/`, `audit`,
-`request`, `cookie-names`, `client-cookies`) and are importable from
-anywhere, including from inside modules.
+`request`, `cookie-names`, `client-cookies`, `csrf-headers`) and are
+importable from anywhere, including from inside modules.
 
 ## Provider Abstraction Pattern
 
@@ -70,7 +73,8 @@ functions directly, not `fetch()`).
 
 ## Background Jobs
 
-Introduced in Phase 3. Two BullMQ queues (`src/jobs/queues.ts`):
+Introduced in Phase 3, extended in Phase 4. Three BullMQ queues
+(`src/jobs/queues.ts`):
 
 - **`image-processing`** — triggered by `confirmImageUpload()` after a
   client finishes uploading an original image. The worker
@@ -83,11 +87,25 @@ Introduced in Phase 3. Two BullMQ queues (`src/jobs/queues.ts`):
   Recomputes `Listing.searchText` (Arabic-normalized title +
   description) asynchronously, keeping the write path fast and the
   indexing logic swappable independent of the write path.
+- **`listing-expiry`** (Phase 4) — a repeatable job (every 15 minutes,
+  `LISTING_EXPIRY_SWEEP_INTERVAL_MS`) that flips `ACTIVE` listings past
+  `expiresAt` to `EXPIRED` (`sweepExpiredListings`). Registered via
+  `queue.add()` with a fixed `jobId` + `repeat` option, which BullMQ
+  dedupes on — safe to re-register on every worker-process restart
+  without creating duplicate schedulers.
 
 Jobs run in a **separate process** (`src/worker.ts`, started via `npm run
 worker`), not inside the Next.js server — so a slow/crashing image job
 can never take down request handling, and the worker can be scaled
-independently of the web tier later.
+independently of the web tier later. That entrypoint wraps its startup in
+an `async function main()` rather than using top-level `await`: `tsx`
+transpiles it to CJS (no `"type": "module"` in `package.json`), and
+esbuild's CJS output doesn't support top-level await — it throws
+immediately instead of running. This was a real bug found during Phase 4:
+`e2e/global-setup.ts` spawns the worker with `stdio: "ignore"`, so the
+crash was silent and surfaced only as an unrelated-looking Playwright
+timeout (waiting for an image-processing job that was never actually
+running).
 
 Two separate Redis (ioredis) connections exist for a subtle reason:
 `src/lib/redis.ts` (`maxRetriesPerRequest: 3`) is used for general
@@ -156,19 +174,21 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 81 tests across 13
-  files as of Phase 3.
+  against the real dev Postgres/Redis (not mocked) — 103 tests across 17
+  files as of Phase 4.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.
 - **End-to-end** (Playwright): full golden-path flows through the real
-  running app — `auth-signup.spec.ts` (Phase 2) and
+  running app — `auth-signup.spec.ts` (Phase 2),
   `listing-search-flow.spec.ts` (Phase 3: create a listing, upload an
-  image, wait for it to process to `READY`, then find it via search).
-  `e2e/global-setup.ts`/`global-teardown.ts` spawn and kill a real BullMQ
-  worker process for the duration of the suite (via a detached process
-  group + PID file, since Playwright's setup/teardown don't share process
-  memory), so the image-processing pipeline is exercised end-to-end, not
-  mocked.
+  image, wait for it to process to `READY`, then find it via search), and
+  `store-management-flow.spec.ts` (Phase 4: create a store, view it
+  publicly, bulk-mark a listing sold, confirm it drops off the
+  storefront). `e2e/global-setup.ts`/`global-teardown.ts` spawn and kill a
+  real BullMQ worker process for the duration of the suite (via a
+  detached process group + PID file, since Playwright's setup/teardown
+  don't share process memory), so the image-processing pipeline is
+  exercised end-to-end, not mocked.
 
 CI (`.github/workflows/ci.yml`) runs lint → typecheck → module-boundary
 check → migrate deploy → migration-drift check → seed → unit tests →

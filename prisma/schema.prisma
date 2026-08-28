@@ -37,9 +37,10 @@ model User {
   listings             Listing[]
   sessions             Session[]
   verificationRequests VerificationRequest[]
-  auditLogs            AuditLog[]             @relation("AuditActor")
+  auditLogs            AuditLog[]            @relation("AuditActor")
   favorites            Favorite[]
   savedSearches        SavedSearch[]
+  store                Store?
 
   @@map("users")
 }
@@ -175,17 +176,17 @@ enum CategoryCommerceDefault {
 }
 
 model Category {
-  id        String                  @id @default(cuid())
-  slug      String                  @unique
-  nameAr    String
-  nameEn    String
-  icon      String?
-  sortOrder Int                     @default(0)
+  id              String                  @id @default(cuid())
+  slug            String                  @unique
+  nameAr          String
+  nameEn          String
+  icon            String?
+  sortOrder       Int                     @default(0)
   // Default only — never a permanent lock. A per-seller/per-listing admin
   // override table lands in Phase 10; resolveCommerceEligibility() already
   // reads it as an extension point, it just has nothing to consult yet.
   commerceDefault CategoryCommerceDefault @default(NOT_ELIGIBLE)
-  deletedAt DateTime?
+  deletedAt       DateTime?
 
   attributes CategoryAttribute[]
   listings   Listing[]
@@ -230,24 +231,24 @@ enum FulfillmentMode {
 }
 
 model Listing {
-  id            String           @id @default(cuid())
-  title         String
-  description   String?
-  price         Decimal?         @db.Decimal(12, 2)
-  currency      String           @default("EGP")
-  negotiable    Boolean          @default(false)
-  status        ListingStatus    @default(DRAFT)
-  ownerId       String
-  owner         User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  categoryId    String
-  category      Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  governorateId String?
-  governorate   Governorate?     @relation(fields: [governorateId], references: [id], onDelete: SetNull)
-  cityId        String?
-  city          City?            @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  id              String           @id @default(cuid())
+  title           String
+  description     String?
+  price           Decimal?         @db.Decimal(12, 2)
+  currency        String           @default("EGP")
+  negotiable      Boolean          @default(false)
+  status          ListingStatus    @default(DRAFT)
+  ownerId         String
+  owner           User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  categoryId      String
+  category        Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  governorateId   String?
+  governorate     Governorate?     @relation(fields: [governorateId], references: [id], onDelete: SetNull)
+  cityId          String?
+  city            City?            @relation(fields: [cityId], references: [id], onDelete: SetNull)
   // Category-attribute values, validated server-side against CategoryAttribute
   // at write time — never trusted as-is from the client.
-  attributes    Json?
+  attributes      Json?
   // Hybrid commerce model (per-listing, not per-category-locked): see
   // modules/catalog/commerceEligibility.ts for how these are resolved.
   commerceEnabled Boolean          @default(false)
@@ -255,12 +256,12 @@ model Listing {
   // Precomputed, Arabic-normalized "title + description" used by the
   // PostgresSearchProvider (pg_trgm) — kept in sync on every write so search
   // never has to re-normalize at query time.
-  searchText    String?
-  viewCount     Int              @default(0)
-  expiresAt     DateTime?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  deletedAt     DateTime?
+  searchText      String?
+  viewCount       Int              @default(0)
+  expiresAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  deletedAt       DateTime?
 
   images    ListingImage[]
   favorites Favorite[]
@@ -321,4 +322,26 @@ model SavedSearch {
 
   @@index([userId])
   @@map("saved_searches")
+}
+
+// One optional public storefront per seller — available to individual and
+// business sellers alike (not gated to User.role === BUSINESS), matching the
+// hybrid per-listing commerce model rather than tying features to account
+// type. Purely a free branding/discovery surface in this phase: no paid
+// tiers, no financial fields (that would be an OWNER DECISION REQUIRED item
+// for a future phase, not invented here).
+model Store {
+  id          String    @id @default(cuid())
+  ownerId     String    @unique
+  owner       User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  slug        String    @unique
+  name        String
+  description String?
+  logoUrl     String?
+  coverUrl    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@map("stores")
 }

@@ -117,6 +117,25 @@ statuses, including `DRAFT`/`SOLD`/`EXPIRED`).
 Requires session + CSRF. Toggles a `Favorite` row for the current user
 on this listing. Returns the new favorited state.
 
+## Listing Bulk & Renewal (Phase 4)
+
+### `POST /api/listings/bulk`
+
+Requires session + CSRF. Body: `{ listingIds: string[] (max 100), action:
+"mark_sold" | "delete" | "relist" }`. Every action is scoped to the
+caller's own listings in the query's `WHERE` clause itself — an ID for a
+listing the caller doesn't own is silently excluded from `affected`
+rather than causing an error. `relist` only affects listings currently
+`SOLD` or `EXPIRED`, flipping them to `ACTIVE` with a fresh `expiresAt`.
+Returns `{ requested, affected }`.
+
+### `POST /api/listings/[id]/renew`
+
+Requires session + CSRF + ownership. Resets `expiresAt` to a fresh
+60-day window and ensures status is `ACTIVE`. Only works on listings
+currently `ACTIVE` or `EXPIRED` — a `SOLD` listing must be revived via
+the `relist` bulk action instead, not renewed.
+
 ## Listing Images (Phase 3)
 
 ### `POST /api/listings/[id]/images/upload-url`
@@ -145,6 +164,43 @@ its underlying storage objects.
 ### `GET /api/favorites`
 
 Requires session. Returns the current user's favorited listings.
+
+## Stores (Phase 4)
+
+### `POST /api/stores`
+
+Requires session + CSRF. Body: `{ name: string, description?: string }`.
+Creates the caller's storefront — one per user (`already_exists` on a
+second attempt). Generates a globally unique `slug` server-side; the
+client never supplies one. Returns `{ success, storeId, slug }`.
+
+### `GET /api/stores/mine`
+
+Requires session. Returns `{ store: Store | null }` for the caller's own
+storefront (or `null` if they haven't created one).
+
+### `PATCH /api/stores/mine`
+
+Requires session + CSRF. Body: `{ name?: string, description?: string }`.
+Updates the caller's own storefront. `404` if they don't have one yet.
+
+### `POST /api/stores/mine/branding?kind=logo|cover`
+
+Requires session + CSRF. Body is the raw image bytes (not JSON) with
+`Content-Type` set to `image/jpeg`, `image/png`, or `image/webp` — same
+allow-list as listing images. Validated by magic bytes
+(`detectImageMime`, reused from the listing-image pipeline), resized
+synchronously (logo: 400×400 cover-fit; cover: 1600×500 cover-fit),
+re-encoded to WebP, and stored via the same `StorageProvider` as listing
+photos. Unlike listing images this is **not** queued through BullMQ —
+branding images are small and low-volume enough that the settings page
+can wait for the result inline. Returns `{ success, url }`.
+
+### `GET /api/stores/[slug]`
+
+Public. Returns `{ store, listings }` where `listings` is the store
+owner's `ACTIVE` listings, paginated (`?page=`). `404` if the slug
+doesn't resolve to a store.
 
 ## Search (Phase 3)
 

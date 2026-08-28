@@ -18,9 +18,14 @@ export async function SiteHeader() {
             تصفح الإعلانات
           </Link>
           {user && (
-            <Link href="/listings/mine" className="hover:text-teal-700">
-              إعلاناتي
-            </Link>
+            <>
+              <Link href="/dashboard" className="hover:text-teal-700">
+                لوحة التحكم
+              </Link>
+              <Link href="/listings/mine" className="hover:text-teal-700">
+                إعلاناتي
+              </Link>
+            </>
           )}
         </nav>
 

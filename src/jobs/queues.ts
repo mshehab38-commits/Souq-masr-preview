@@ -3,6 +3,8 @@ import { queueRedis } from "@/lib/queue-redis";
 import type { ImageProcessingJobData } from "./image-processing";
 import type { SearchIndexJobData } from "./search-indexing";
 
+export const LISTING_EXPIRY_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+
 const defaultJobOptions = {
   attempts: 3,
   backoff: { type: "exponential" as const, delay: 2000 },
@@ -16,6 +18,11 @@ export const imageProcessingQueue = new Queue<ImageProcessingJobData>("image-pro
 });
 
 export const searchIndexQueue = new Queue<SearchIndexJobData>("search-indexing", {
+  connection: queueRedis,
+  defaultJobOptions,
+});
+
+export const listingExpiryQueue = new Queue("listing-expiry", {
   connection: queueRedis,
   defaultJobOptions,
 });

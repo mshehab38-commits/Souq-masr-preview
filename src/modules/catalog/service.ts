@@ -26,8 +26,19 @@ export {
   softDeleteListing,
   markListingAsSold,
   incrementListingViewCount,
+  bulkUpdateListings,
+  renewListing,
+  getSellerStats,
 } from "./listings";
-export type { ListingInput, CreateListingResult, UpdateListingResult } from "./listings";
+export type {
+  ListingInput,
+  CreateListingResult,
+  UpdateListingResult,
+  BulkListingAction,
+  BulkActionResult,
+  RenewListingResult,
+  SellerStats,
+} from "./listings";
 export {
   requestImageUploadTarget,
   confirmImageUpload,

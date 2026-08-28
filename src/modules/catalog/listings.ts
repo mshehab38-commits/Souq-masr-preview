@@ -4,6 +4,12 @@ import { searchIndexQueue } from "@/jobs/queues";
 import { resolveCommerceEligibility } from "./commerceEligibility";
 import { validateListingAttributes } from "./attributes";
 
+// How long a newly (re)published listing stays ACTIVE before the expiry
+// sweep (src/jobs/listing-expiry.ts) marks it EXPIRED. Not a business/pricing
+// decision — a technical default for keeping stale inventory out of search;
+// revisit only if the owner wants seller-facing control over it later.
+export const LISTING_LIFETIME_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+
 export interface ListingInput {
   categoryId: string;
   title: string;
@@ -62,6 +68,7 @@ export async function createListing(
       commerceEnabled,
       fulfillmentMode,
       status: "ACTIVE",
+      expiresAt: new Date(Date.now() + LISTING_LIFETIME_MS),
     },
   });
 
@@ -136,6 +143,40 @@ export async function listListingsByOwner(ownerId: string) {
   });
 }
 
+export interface SellerStats {
+  activeCount: number;
+  soldCount: number;
+  expiredCount: number;
+  totalViews: number;
+  favoritesReceived: number;
+}
+
+export async function getSellerStats(ownerId: string): Promise<SellerStats> {
+  const [statusCounts, viewAggregate, favoritesReceived] = await Promise.all([
+    prisma.listing.groupBy({
+      by: ["status"],
+      where: { ownerId, deletedAt: null },
+      _count: { _all: true },
+    }),
+    prisma.listing.aggregate({
+      where: { ownerId, deletedAt: null },
+      _sum: { viewCount: true },
+    }),
+    prisma.favorite.count({ where: { listing: { ownerId, deletedAt: null } } }),
+  ]);
+
+  const countFor = (status: string) =>
+    statusCounts.find((row) => row.status === status)?._count._all ?? 0;
+
+  return {
+    activeCount: countFor("ACTIVE"),
+    soldCount: countFor("SOLD"),
+    expiredCount: countFor("EXPIRED"),
+    totalViews: viewAggregate._sum.viewCount ?? 0,
+    favoritesReceived,
+  };
+}
+
 export async function softDeleteListing(listingId: string, ownerId: string): Promise<boolean> {
   const result = await prisma.listing.updateMany({
     where: { id: listingId, ownerId, deletedAt: null },
@@ -156,4 +197,56 @@ export async function incrementListingViewCount(listingId: string): Promise<void
   await prisma.listing
     .update({ where: { id: listingId }, data: { viewCount: { increment: 1 } } })
     .catch(() => undefined);
+}
+
+export type BulkListingAction = "mark_sold" | "delete" | "relist";
+
+export interface BulkActionResult {
+  requested: number;
+  affected: number;
+}
+
+// Every action is scoped to `ownerId` in the WHERE clause itself (not
+// checked per-row after fetching) so a caller can never affect another
+// seller's listings by passing IDs they don't own — those IDs are simply
+// excluded from `affected` rather than causing an error.
+export async function bulkUpdateListings(
+  ownerId: string,
+  listingIds: string[],
+  action: BulkListingAction,
+): Promise<BulkActionResult> {
+  const where = { id: { in: listingIds }, ownerId, deletedAt: null };
+
+  if (action === "mark_sold") {
+    const result = await prisma.listing.updateMany({ where, data: { status: "SOLD" } });
+    return { requested: listingIds.length, affected: result.count };
+  }
+
+  if (action === "delete") {
+    const result = await prisma.listing.updateMany({
+      where,
+      data: { deletedAt: new Date(), status: "REMOVED" },
+    });
+    return { requested: listingIds.length, affected: result.count };
+  }
+
+  // relist: only makes sense for listings not currently ACTIVE (SOLD/EXPIRED)
+  const result = await prisma.listing.updateMany({
+    where: { ...where, status: { in: ["SOLD", "EXPIRED"] } },
+    data: { status: "ACTIVE", expiresAt: new Date(Date.now() + LISTING_LIFETIME_MS) },
+  });
+  return { requested: listingIds.length, affected: result.count };
+}
+
+export type RenewListingResult =
+  | { success: true }
+  | { success: false; error: "not_found" };
+
+export async function renewListing(listingId: string, ownerId: string): Promise<RenewListingResult> {
+  const result = await prisma.listing.updateMany({
+    where: { id: listingId, ownerId, deletedAt: null, status: { in: ["ACTIVE", "EXPIRED"] } },
+    data: { status: "ACTIVE", expiresAt: new Date(Date.now() + LISTING_LIFETIME_MS) },
+  });
+  if (result.count === 0) return { success: false, error: "not_found" };
+  return { success: true };
 }

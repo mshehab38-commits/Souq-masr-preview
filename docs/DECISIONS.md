@@ -154,3 +154,60 @@ image-processing job can never block or crash request handling, and the
 worker tier can be scaled (more processes/replicas) independently of the
 web tier once load requires it — without any code change, just a
 deployment/ops change.
+
+## `worker.ts` wraps startup in `async function main()`, never top-level `await`
+
+Found during Phase 4: adding a third worker (`createListingExpiryWorker`,
+which needs to `await` a `queue.add()` call before it can return) via a
+top-level `await` in `src/worker.ts` compiled fine under `tsc` (the
+`tsconfig.json` module target allows top-level await) but crashed
+immediately at runtime — `tsx` transpiles this entrypoint to CJS output
+(no `"type": "module"` in `package.json`), and esbuild's CJS output
+doesn't support top-level await at all. The crash was silent in practice:
+`e2e/global-setup.ts` spawns the worker process with `stdio: "ignore"`,
+so nothing surfaced except an unrelated-looking Playwright timeout in
+`listing-search-flow.spec.ts` (waiting on an image-processing job that
+was, in fact, never running — the worker process had already exited).
+Root-caused by running `npm run worker` directly instead of through
+Playwright's plumbing, which showed the `esbuild`/`ERR_REQUIRE_ASYNC_MODULE`
+error immediately. Fixed by wrapping all startup logic in an `async
+function main()` and calling it with a `.catch()` — the general lesson:
+any script run through `tsx` as a direct entrypoint (not imported) should
+avoid top-level `await`, even though `tsc --noEmit` won't catch the
+mismatch.
+
+## Store slugs: random suffix always, never an incrementing counter
+
+`generateStoreSlug()` (`src/modules/store/slug.ts`) always appends an
+8-hex-character random suffix to whatever ASCII base it can derive from
+the store name, rather than trying `name`, then `name-2`, `name-3`, etc.
+on collision. Store names are frequently Arabic and often reduce to no
+ASCII content at all (`store-<suffix>` fallback), so a meaningful
+human-readable slug usually isn't achievable anyway — and a fixed-length
+random suffix turns slug generation into a single
+insert-and-retry-on-conflict operation instead of a read-then-write race
+that would need its own locking under concurrent store creation.
+
+## Branding uploads (logo/cover) are synchronous, not queued through BullMQ
+
+`uploadStoreBranding()` resizes and re-encodes the image inline in the
+request handler, unlike listing photos which go through the async
+`image-processing` queue with three generated variants. Branding images
+are low-volume (one logo, one cover, per seller, changed rarely) and the
+store settings page needs the result immediately to show the update —
+there's no user-facing benefit to the async multi-variant pipeline here,
+only added complexity. Still shares the listing pipeline's
+never-trust-client-`Content-Type` magic-byte check (`detectImageMime`,
+imported directly from `src/jobs/image-processing.ts` rather than
+duplicated) and its EXIF-stripping behavior (`rotate()` then re-encode
+without `withMetadata()`).
+
+## Storefronts have no pricing/subscription fields
+
+`Store` is a free branding and discovery surface in this phase — no
+tier, no fee, no financial field of any kind. This is deliberate, not an
+oversight: introducing paid store tiers would require pricing/commission
+decisions that belong to the project owner, not something to invent
+while building the technical feature. If paid tiers are wanted later,
+that's a new phase with its own OWNER DECISION REQUIRED items, layered on
+top of this model rather than requiring it to change.
