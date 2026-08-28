@@ -27,4 +27,15 @@ describe("loadEnv", () => {
     expect(parsed.NODE_ENV).toBe("development");
     expect(parsed.APP_URL).toBe("http://localhost:3000");
   });
+
+  it("requires OTP_PEPPER in production, with no silent fallback", () => {
+    expect(() => loadEnv({ ...validEnv, NODE_ENV: "production" })).toThrow(/OTP_PEPPER/);
+    expect(() =>
+      loadEnv({ ...validEnv, NODE_ENV: "production", OTP_PEPPER: "a".repeat(32) }),
+    ).not.toThrow();
+  });
+
+  it("allows OTP_PEPPER to be omitted outside production", () => {
+    expect(() => loadEnv({ ...validEnv, NODE_ENV: "development" })).not.toThrow();
+  });
 });

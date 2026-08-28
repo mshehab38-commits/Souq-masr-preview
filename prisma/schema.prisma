@@ -7,16 +7,128 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Shell only — Phase 2 adds phone, role, verification and auth-related columns.
-model User {
-  id        String    @id @default(cuid())
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  deletedAt DateTime?
+enum UserRole {
+  INDIVIDUAL
+  BUSINESS
+  MODERATOR
+  ADMIN
+}
 
-  listings Listing[]
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+model User {
+  id                 String     @id @default(cuid())
+  phone              String     @unique
+  name               String?
+  role               UserRole   @default(INDIVIDUAL)
+  status             UserStatus @default(ACTIVE)
+  phoneVerifiedAt    DateTime?
+  commerceVerifiedAt DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  deletedAt          DateTime?
+
+  listings             Listing[]
+  sessions             Session[]
+  verificationRequests VerificationRequest[]
+  auditLogs            AuditLog[]             @relation("AuditActor")
 
   @@map("users")
+}
+
+enum OtpPurpose {
+  LOGIN_OR_REGISTER
+}
+
+// Keyed by phone, not by user: a code can be requested before any User row
+// exists yet (the OTP flow doubles as registration on first verification).
+model OtpCode {
+  id          String     @id @default(cuid())
+  phone       String
+  codeHash    String
+  purpose     OtpPurpose @default(LOGIN_OR_REGISTER)
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime   @default(now())
+
+  @@index([phone, createdAt])
+  @@map("otp_codes")
+}
+
+// Opaque, server-revocable session tokens — only a hash is ever stored, so a
+// database read alone can never yield a usable session token.
+model Session {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+enum VerificationRequestType {
+  INDIVIDUAL_SELLER
+  BUSINESS
+}
+
+enum VerificationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// The submission path exists from Phase 2; the admin review UI lands in
+// Phase 10. documentUrl stays optional until Phase 3 builds real uploads.
+model VerificationRequest {
+  id           String                    @id @default(cuid())
+  userId       String
+  user         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         VerificationRequestType
+  status       VerificationRequestStatus @default(PENDING)
+  businessName String?
+  documentUrl  String?
+  notes        String?
+  reviewedBy   String?
+  reviewedAt   DateTime?
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@map("verification_requests")
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+}
+
+model AuditLog {
+  id         String         @id @default(cuid())
+  actorId    String?
+  actor      User?          @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorType  AuditActorType @default(USER)
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   Json?
+  createdAt  DateTime       @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@map("audit_logs")
 }
 
 model Governorate {

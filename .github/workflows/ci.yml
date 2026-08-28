@@ -28,6 +28,10 @@ jobs:
       DATABASE_URL: postgresql://souqmasr:souqmasr_dev_pw@localhost:5432/souqmasr?schema=public
       REDIS_URL: redis://localhost:6379
       APP_URL: http://localhost:3000
+      # CI-only value — `next build` forces NODE_ENV=production, which our env
+      # validation requires a real OTP_PEPPER for. Actual deployments must set
+      # their own via the hosting platform's secret manager.
+      OTP_PEPPER: ${{ secrets.OTP_PEPPER || 'ci-only-placeholder-pepper-not-for-prod' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +64,12 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: npm run e2e
 
       - name: Build
         run: npm run build
