@@ -2,9 +2,12 @@
 
 > Source of truth for resuming work across sessions. Read this file (and
 > `git log`) at the start of every session instead of relying on prior
-> conversation memory.
+> conversation memory. Read `CLAUDE.md` first for the permanent operating
+> rules this file's history assumes, `docs/BUSINESS_MODEL.md` before
+> touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
+> the owner expects tasks to be framed.
 
-Last updated: 2026-08-28 (Phase 5 completion)
+Last updated: 2026-08-28 (Phase 5 completion + permanent memory files)
 
 ## Current Status
 
@@ -23,7 +26,19 @@ only `tamam-standalone.html`. That's simply `main` — every real commit
 (Phases 1 through 5) has always lived on `claude/souq-masr-production-
 plan-g38qwv` instead, and was already safely pushed. Nothing was ever
 lost; this is noted here so a future session doesn't waste time
-re-investigating the same non-issue.
+re-investigating the same non-issue. Confirmed via GitHub: PR #1
+(`claude/souq-masr-production-plan-g38qwv` → `main`) exists but is
+**closed, not merged** — so `main` genuinely has never received any of
+this work. All future development stays on
+`claude/souq-masr-production-plan-g38qwv` unless explicitly told
+otherwise.
+
+**Permanent memory files** (read at the start of every session, per
+`CLAUDE.md`): `/CLAUDE.md` (operating rules), `PROJECT_STATE.md` (this
+file), `docs/BUSINESS_MODEL.md` (owner-approved financial rules —
+consolidates, does not change, everything already recorded below and in
+`docs/DECISIONS.md`), `docs/OWNER_WORK_METHOD.md` (how the owner expects
+tasks to be framed across disciplines).
 
 ## Phase History
 
