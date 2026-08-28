@@ -4,20 +4,23 @@
 > `git log`) at the start of every session instead of relying on prior
 > conversation memory.
 
-Last updated: 2026-08-28 (Phase 4 completion)
+Last updated: 2026-08-28 (Phase 5 blocked pending owner financial decisions)
 
 ## Current Status
 
-**Phase 4 (Seller Dashboard, Stores & Inventory Management) is COMPLETE, validated, and about to be committed/pushed.**
+**Phase 4 (Seller Dashboard, Stores & Inventory Management) is COMPLETE, validated, committed, and pushed.** Code state is unchanged since that push — this update is documentation-only.
 
 Branch: `claude/souq-masr-production-plan-g38qwv`
-Latest commit: `0185481` — "Phase 4: seller dashboard, stores, and inventory management"
+Latest commit: `0d2bb0e` — "Record Phase 4 commit hash in PROJECT_STATE.md"
 
-Per the approved execution rule (one phase at a time, stop and wait for
-explicit approval before starting the next major phase), **this session
-stops here, awaiting approval to begin Phase 5** (per the original
-11-phase roadmap: Orders/Checkout — this is where the first pricing/
-commission/settlement OWNER DECISION REQUIRED items are expected).
+**Phase 5 (Orders/Checkout) implementation is explicitly BLOCKED.** The
+owner asked to see all financial/commercial decisions Phase 5 depends on
+*before* any Phase 5 code is written, per the standing rule that the
+engineer must never invent a financial value. No Phase 5 schema, module,
+route, or page has been started. See "Phase 5 Blocking Decisions" below
+for the full list awaiting owner sign-off, and the chat transcript around
+2026-08-28 for the complete decision write-up (options, impact, storage
+needs, and RECOMMENDATION-ONLY engineering suggestions for each).
 
 ## Phase History
 
@@ -142,29 +145,60 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   feature in this phase, with paid tiers (if ever wanted) deferred to a
   future phase with its own OWNER DECISION REQUIRED items.
 
-## OWNER DECISION REQUIRED
+## OWNER DECISION REQUIRED — Phase 5 Blocking Decisions
 
-None yet. Phase 4 introduced no pricing, fee, commission, subscription,
-or other financial/commercial logic — storefronts are free, and the
-60-day listing lifetime is a technical/UX default (keeping stale
-inventory out of search), not a monetization lever. The first OWNER
-DECISION REQUIRED items are expected in Phase 5 (Orders/Checkout —
-commission %, seller settlement %) and Phase 7 (Payments — payment
-provider fees) per the original roadmap.
+Phase 4 itself introduced no financial logic (storefronts are free; the
+60-day listing lifetime is a technical/UX default, not a monetization
+lever). Phase 5 (Orders/Checkout) is different: the `Order` schema and
+state machine cannot be designed correctly without these decisions —
+building it on invented placeholder values would mean a breaking
+migration and reconciliation mess once real values are set. **None of
+the 9 items below have been decided. No Phase 5 code exists.** Full
+option/impact/storage/recommendation write-up for each was delivered in
+chat on 2026-08-28 — this table is the tracking summary, not a
+replacement for that detail.
+
+| # | Decision | Blocks Phase 5? | Status |
+|---|---|---|---|
+| D1 | Commission rate structure (% and/or scope: global/category/tier) | Yes | Awaiting owner |
+| D2 | Additional fixed platform fee (on top of/instead of commission %) | Yes | Awaiting owner |
+| D3 | Seller payout mechanics (minimum threshold, payout schedule/method) | Yes | Awaiting owner |
+| D4 | Settlement timing / holding period after delivery | Yes | Awaiting owner |
+| D5 | Payment processing fee treatment (platform/seller/buyer absorbs it) | Yes | Awaiting owner |
+| D6 | Shipping fee structure for `PLATFORM_SHIPPING` orders | Yes | Awaiting owner |
+| D7 | Cancellation fee policy (buyer-initiated / seller-initiated) | Yes | Awaiting owner |
+| D8 | Refund fee treatment (is the processing fee/commission refunded too) | Yes | Awaiting owner |
+| D9 | Taxes/VAT treatment on commission — **recommend involving a tax advisor** | Yes | Awaiting owner |
+| D10 | Subscription pricing (paid store/seller tiers) | No — deferrable | Not urgent |
+| D11 | Promoted listing pricing (paid boosted placement) | No — deferrable | Not urgent, future phase |
+
+Engineering has NOT chosen or defaulted any of D1–D9 in code. Nothing in
+the repository currently reflects a commission rate, fee amount, payout
+schedule, shipping fee, cancellation/refund policy, or tax rate — those
+concepts don't exist anywhere in the schema yet, by design, until D1–D9
+are answered.
 
 ## Blockers
 
-None. Ready to proceed to Phase 5 pending explicit approval.
+**Phase 5 implementation is blocked** on the owner deciding D1–D9 above.
+This is the only blocker; there is no technical obstacle. D10/D11 do not
+block Phase 5 and can be decided whenever convenient.
 
 ## Exact Next Action
 
-Phase 4 is committed (`0185481`) and pushed to
-`claude/souq-masr-production-plan-g38qwv`.
-
-**Wait for explicit user approval before starting Phase 5**
-   (Orders/Checkout), per the standing execution rule. Once approved:
-   read this file + `docs/*` fresh (don't rely on conversation memory),
-   confirm current git state matches this document, then begin Phase 5
-   design/implementation — expect the first OWNER DECISION REQUIRED items
-   here (commission %, seller settlement %) and mark them clearly rather
-   than inventing values.
+1. **Wait for the owner to answer D1–D9** (D10/D11 optional, can be
+   answered later). No Phase 5 schema/module/route/page work starts
+   before that.
+2. Once answered: record the exact chosen values/structures in this file
+   under a new "Phase 5 Financial Configuration" section and in
+   `docs/DECISIONS.md`/a new `docs/PAYMENTS.md` or `docs/ORDERS.md` as
+   appropriate, encode them as configurable settings (never hardcoded
+   literals) per the standing rule, then begin Phase 5 design/
+   implementation: `Order` schema with commission/fee snapshot fields,
+   the state machine (Pending→Confirmed→Preparing→Ready for Pickup→
+   Picked Up→In Transit→Out for Delivery→Delivered→Completed, plus
+   Cancelled/Failed/Returned/Refunded/Disputed), checkout flow from a
+   commerce-enabled listing, and a seller payout ledger.
+3. Read this file + `docs/*` fresh at the start of that session (don't
+   rely on conversation memory) and confirm current git state matches
+   this document before writing any code.
