@@ -9,9 +9,10 @@ datasource db {
 
 // Shell only — Phase 2 adds phone, role, verification and auth-related columns.
 model User {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String    @id @default(cuid())
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   listings Listing[]
 
@@ -50,12 +51,13 @@ enum CategoryAttributeType {
 }
 
 model Category {
-  id        String   @id @default(cuid())
-  slug      String   @unique
+  id        String    @id @default(cuid())
+  slug      String    @unique
   nameAr    String
   nameEn    String
   icon      String?
-  sortOrder Int      @default(0)
+  sortOrder Int       @default(0)
+  deletedAt DateTime?
 
   attributes CategoryAttribute[]
   listings   Listing[]
@@ -76,6 +78,7 @@ model CategoryAttribute {
   options    Json?
   required   Boolean               @default(false)
   sortOrder  Int                   @default(0)
+  deletedAt  DateTime?
 
   @@unique([categoryId, key])
   @@index([categoryId])
@@ -84,14 +87,15 @@ model CategoryAttribute {
 
 // Minimal shell — Phase 3 adds status, images, attributes payload, pricing and geo fields.
 model Listing {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   title      String
   ownerId    String
-  owner      User     @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  owner      User      @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   categoryId String
-  category   Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
 
   @@index([categoryId])
   @@index([ownerId])
