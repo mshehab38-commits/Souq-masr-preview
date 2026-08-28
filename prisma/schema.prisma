@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Shell only — Phase 2 adds phone, role, verification and auth-related columns.
+model User {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listings Listing[]
+
+  @@map("users")
+}
+
+model Governorate {
+  id     String @id @default(cuid())
+  slug   String @unique
+  nameAr String
+  nameEn String
+
+  cities City[]
+
+  @@map("governorates")
+}
+
+model City {
+  id            String      @id @default(cuid())
+  slug          String
+  nameAr        String
+  nameEn        String
+  governorateId String
+  governorate   Governorate @relation(fields: [governorateId], references: [id], onDelete: Restrict)
+
+  @@unique([governorateId, slug])
+  @@index([governorateId])
+  @@map("cities")
+}
+
+enum CategoryAttributeType {
+  TEXT
+  NUMBER
+  SELECT
+  BOOLEAN
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  nameAr    String
+  nameEn    String
+  icon      String?
+  sortOrder Int      @default(0)
+
+  attributes CategoryAttribute[]
+  listings   Listing[]
+
+  @@map("categories")
+}
+
+// Data-driven per-category form fields — admin-managed from Phase 9 onward,
+// so the frontend never hardcodes a category's attribute set.
+model CategoryAttribute {
+  id         String                @id @default(cuid())
+  categoryId String
+  category   Category              @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  key        String
+  labelAr    String
+  labelEn    String
+  type       CategoryAttributeType
+  options    Json?
+  required   Boolean               @default(false)
+  sortOrder  Int                   @default(0)
+
+  @@unique([categoryId, key])
+  @@index([categoryId])
+  @@map("category_attributes")
+}
+
+// Minimal shell — Phase 3 adds status, images, attributes payload, pricing and geo fields.
+model Listing {
+  id         String   @id @default(cuid())
+  title      String
+  ownerId    String
+  owner      User     @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([ownerId])
+  @@map("listings")
+}
