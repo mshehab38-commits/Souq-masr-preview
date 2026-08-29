@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { createNotification } from "@/modules/notifications/service";
 import { normalizeArabicText } from "@/modules/catalog/service";
@@ -85,13 +86,35 @@ export function matchesListing(query: RawSearchParams, listing: MatchableListing
   return true;
 }
 
+// Atomically claims the right to notify `userId` about `listingId`.
+// Returns true if this call won the claim (no prior record existed),
+// false if already claimed (a prior run of this job — e.g. a listing
+// edit re-triggering re-indexing — or a concurrent overlapping job for
+// the same listing). Keyed by (userId, listingId) only — never
+// savedSearchId — see docs/DECISIONS.md for why: deleteSavedSearch fully
+// removes a SavedSearch row, and a savedSearchId-keyed claim would
+// disappear with it, letting a still-matching different saved search
+// re-notify the same user about a listing they were already told about.
+async function claimSavedSearchNotification(userId: string, listingId: string): Promise<boolean> {
+  try {
+    await prisma.savedSearchNotification.create({ data: { userId, listingId } });
+    return true;
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 // Called from the search-indexing job (src/jobs/search-indexing.ts) once a
 // new listing's searchText is available — not from createListing directly,
 // so this stays off the synchronous create-listing request path, matching
-// how search indexing itself is already async. One notification per
-// matching user (not per matching saved search), even if several of a
-// user's saved searches match the same listing — avoids spamming one user
-// with near-duplicate notifications about the same listing.
+// how search indexing itself is already async. This job also re-runs on
+// every listing edit (title/description change re-queues indexing), so
+// every matching user is claimed via SavedSearchNotification before being
+// notified — one notification per matching user per listing, ever, not
+// just "per matching saved search" within a single call.
 export async function notifyMatchingSavedSearches(listingId: string): Promise<number> {
   const listing = await prisma.listing.findUnique({
     where: { id: listingId },
@@ -127,8 +150,16 @@ export async function notifyMatchingSavedSearches(listingId: string): Promise<nu
     }
   }
 
+  const claims = await Promise.all(
+    Array.from(matchedUserIds.entries()).map(async ([userId, searchName]) => {
+      const claimed = await claimSavedSearchNotification(userId, listing.id);
+      return claimed ? { userId, searchName } : null;
+    }),
+  );
+  const toNotify = claims.filter((c): c is { userId: string; searchName: string } => c !== null);
+
   await Promise.all(
-    Array.from(matchedUserIds.entries()).map(([userId, searchName]) =>
+    toNotify.map(({ userId, searchName }) =>
       createNotification({
         userId,
         type: "SAVED_SEARCH_MATCH",
@@ -139,5 +170,5 @@ export async function notifyMatchingSavedSearches(listingId: string): Promise<nu
     ),
   );
 
-  return matchedUserIds.size;
+  return toNotify.length;
 }

@@ -28,6 +28,7 @@ async function makeCategory() {
 }
 
 async function cleanup() {
+  await prisma.savedSearchNotification.deleteMany({ where: { userId: { in: createdUserIds } } });
   await prisma.savedSearch.deleteMany({ where: { userId: { in: createdUserIds } } });
   await prisma.notification.deleteMany({ where: { userId: { in: createdUserIds } } });
   await prisma.listing.deleteMany({ where: { ownerId: { in: createdUserIds } } });
@@ -182,5 +183,110 @@ describe("notifyMatchingSavedSearches", () => {
     });
 
     expect(await notifyMatchingSavedSearches(listing.id)).toBe(0);
+  });
+
+  it("does not re-notify a user on a second call for the same listing (e.g. a listing edit re-triggers indexing)", async () => {
+    const seller = await makeUser();
+    const buyer = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "دراجة للبيع", status: "ACTIVE" },
+    });
+    await createSavedSearch(buyer.id, "دراجات", { category: category.slug });
+
+    expect(await notifyMatchingSavedSearches(listing.id)).toBe(1);
+    expect(await notifyMatchingSavedSearches(listing.id)).toBe(0);
+
+    const notifications = await prisma.notification.findMany({
+      where: { userId: buyer.id, type: "SAVED_SEARCH_MATCH" },
+    });
+    expect(notifications).toHaveLength(1);
+  });
+
+  it("still notifies a newly-added saved search's owner on a re-index without re-notifying an already-claimed user", async () => {
+    const seller = await makeUser();
+    const buyerA = await makeUser();
+    const buyerB = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "دراجة للبيع", status: "ACTIVE" },
+    });
+    await createSavedSearch(buyerA.id, "بحث أ", { category: category.slug });
+
+    expect(await notifyMatchingSavedSearches(listing.id)).toBe(1);
+
+    await createSavedSearch(buyerB.id, "بحث ب", { category: category.slug });
+    expect(await notifyMatchingSavedSearches(listing.id)).toBe(1);
+
+    expect(
+      await prisma.notification.count({ where: { userId: buyerA.id, type: "SAVED_SEARCH_MATCH" } }),
+    ).toBe(1);
+    expect(
+      await prisma.notification.count({ where: { userId: buyerB.id, type: "SAVED_SEARCH_MATCH" } }),
+    ).toBe(1);
+  });
+
+  it("skips a user whose claim already exists even if no prior notification was ever sent through this function", async () => {
+    const seller = await makeUser();
+    const buyer = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "دراجة للبيع", status: "ACTIVE" },
+    });
+    await createSavedSearch(buyer.id, "دراجات", { category: category.slug });
+    await prisma.savedSearchNotification.create({ data: { userId: buyer.id, listingId: listing.id } });
+
+    expect(await notifyMatchingSavedSearches(listing.id)).toBe(0);
+    expect(
+      await prisma.notification.count({ where: { userId: buyer.id, type: "SAVED_SEARCH_MATCH" } }),
+    ).toBe(0);
+  });
+
+  it("deleting one of two matching saved searches does not cause a re-notify from the other still-matching one", async () => {
+    const seller = await makeUser();
+    const buyer = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: {
+        ownerId: seller.id,
+        categoryId: category.id,
+        title: "سيارة تويوتا للبيع",
+        status: "ACTIVE",
+        searchText: "سياره تويوتا للبيع",
+      },
+    });
+    const first = await createSavedSearch(buyer.id, "بحث بالقسم", { category: category.slug });
+    await createSavedSearch(buyer.id, "بحث بالنص", { q: "تويوتا" });
+    if (!first.success) throw new Error("setup failed");
+
+    expect(await notifyMatchingSavedSearches(listing.id)).toBe(1);
+
+    await deleteSavedSearch(first.id, buyer.id);
+    expect(await notifyMatchingSavedSearches(listing.id)).toBe(0);
+
+    expect(
+      await prisma.notification.count({ where: { userId: buyer.id, type: "SAVED_SEARCH_MATCH" } }),
+    ).toBe(1);
+  });
+
+  it("a different listing still notifies the same user — dedup is keyed by listing, not just by user", async () => {
+    const seller = await makeUser();
+    const buyer = await makeUser();
+    const category = await makeCategory();
+    await createSavedSearch(buyer.id, "بحث عام", { category: category.slug });
+
+    const listingA = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "إعلان أول", status: "ACTIVE" },
+    });
+    expect(await notifyMatchingSavedSearches(listingA.id)).toBe(1);
+
+    const listingB = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "إعلان ثاني", status: "ACTIVE" },
+    });
+    expect(await notifyMatchingSavedSearches(listingB.id)).toBe(1);
+
+    expect(
+      await prisma.notification.count({ where: { userId: buyer.id, type: "SAVED_SEARCH_MATCH" } }),
+    ).toBe(2);
   });
 });

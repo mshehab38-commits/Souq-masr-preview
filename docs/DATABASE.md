@@ -99,6 +99,33 @@ schema (which replays every migration into a shadow database) is the
 cheapest way to catch this — run it after any migration-folder rename,
 not just after adding a new one.
 
+**Update (Phase 13): the same bug recurred, in the very next migration
+created after the fix above.**
+`20260829084100_add_saved_search_match_notification_type` (added later
+in the same Phase 12 session that fixed the bug above) had the identical
+defect against the same `add_notifications` migration, and it went
+undetected at the time it was created. The reason is the crucial nuance
+the original writeup above missed: **`npx prisma migrate dev` succeeding
+while *creating* a new migration only proves the *existing*, already-
+on-disk migrations replay cleanly into the shadow database it builds to
+compute the diff — it does not re-verify the *brand-new* migration's own
+folder name once written.** A migration can be generated with a
+perfectly innocent-looking, genuinely-timestamped name (real wall-clock
+time, not hand-picked) and still land lexicographically before an
+earlier-session migration that used a hand-picked "round" timestamp
+(several of this project's earlier migrations, e.g. `130000`, `160000`,
+`170000`, were assigned tidy round times rather than genuine
+`migrate dev` timestamps, for organization — see the non-interactive
+workaround below). Mixing hand-picked and genuine timestamps in the same
+history is exactly what created both collisions. Fixed the same way
+(rename + update the tracking row), then confirmed with a full,
+argument-less `npx prisma migrate dev` (no `--name`, so it can only
+report "already in sync" or fail — it does not create anything) that the
+*entire* history, all 15 folders, replays cleanly. **That
+no-argument, "expect nothing to happen" run is the real verification
+step — run it after every migration folder rename, and treat "already in
+sync" as the only acceptable result.**
+
 ## Entities
 
 ### Identity (Phase 2)
@@ -176,11 +203,24 @@ not just after adding a new one.
   which checks every saved search's filters against the listing (a
   cheap field-predicate match, not a live search-engine query — see
   `docs/DECISIONS.md`) and creates one `SAVED_SEARCH_MATCH` notification
-  per matching user. A known limitation, not yet solved: editing a
-  listing's title/description re-triggers the same indexing job, which
-  can send a repeat notification to a user already notified about that
-  listing — there is no dedup table tracking "already notified
-  (user, listing)" pairs yet.
+  per matching user.
+- **`SavedSearchNotification`** (Phase 13) — a permanent dedup record,
+  `@@unique([userId, listingId])`, with **no relation to `SavedSearch`
+  at all**, only to `User` and `Listing` — mirroring `Favorite`'s exact
+  shape. `notifyMatchingSavedSearches()` claims this row (an insert,
+  relying on the unique constraint — a caught `P2002` means "already
+  notified, skip") immediately before calling `createNotification()`,
+  so a listing re-indexed after a title/description edit — the
+  `search-indexing` job runs on every edit, not just creation — never
+  sends a second `SAVED_SEARCH_MATCH` to the same user about the same
+  listing. Deliberately not keyed by `savedSearchId`: `deleteSavedSearch`
+  fully removes a `SavedSearch` row, and a `savedSearchId`-keyed dedup
+  record would disappear with it, letting a user with a second,
+  still-matching saved search get re-notified about a listing they were
+  already told about the moment the first saved search is deleted. Never
+  expires — same permanent-fact-table lifecycle as `Favorite`, cleaned up
+  only via `onDelete: Cascade` on user/listing deletion, unlike the
+  TTL-based `OtpCode`/rate-limit keys. See `docs/DECISIONS.md`.
 
 ### Seller Storefronts (Phase 4)
 

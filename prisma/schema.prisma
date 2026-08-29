@@ -40,6 +40,7 @@ model User {
   auditLogs            AuditLog[]            @relation("AuditActor")
   favorites            Favorite[]
   savedSearches        SavedSearch[]
+  savedSearchNotifications SavedSearchNotification[]
   store                Store?
   subscriptions        Subscription[]
   buyerOrders          Order[]               @relation("BuyerOrders")
@@ -276,6 +277,7 @@ model Listing {
   favorites Favorite[]
   orders    Order[]
   reports   Report[]
+  savedSearchNotifications SavedSearchNotification[]
 
   @@index([categoryId])
   @@index([ownerId])
@@ -333,6 +335,27 @@ model SavedSearch {
 
   @@index([userId])
   @@map("saved_searches")
+}
+
+// Permanent, one-row-per-(user, listing) dedup record — not keyed by
+// savedSearchId, and deliberately no relation to SavedSearch at all: the
+// guarantee is "this user was already notified about this listing," not
+// "this saved search already fired," so deleting a SavedSearch (or having
+// several saved searches match the same listing) can never cause a
+// re-notify. Never expires — same permanent-fact-table pattern as
+// Favorite, not the TTL pattern used for OtpCode/rate-limit keys. See
+// docs/DECISIONS.md.
+model SavedSearchNotification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+  @@index([listingId])
+  @@map("saved_search_notifications")
 }
 
 // One optional public storefront per seller — available to individual and

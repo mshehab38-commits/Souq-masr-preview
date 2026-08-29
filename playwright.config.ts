@@ -23,10 +23,25 @@ export default defineConfig({
   // Default (30s) is too tight here: a spec that's first to hit several
   // distinct routes (e.g. store-management-flow touching /dashboard/store,
   // /store/[slug], /listings/mine, /api/listings/bulk) pays Next.js's
-  // on-demand compile cost for each one inside a single test — observed
-  // taking ~30s total on this sandbox even though every individual step is
-  // fast, causing an intermittent timeout that isn't a real hang.
-  timeout: 60_000,
+  // on-demand compile cost for each one inside a single test. Raised once
+  // already (to 60s, Phase 10); still observed hitting the ceiling in
+  // Phase 13 at ~48-60s on this sandbox's slower runs, confirmed genuinely
+  // slow rather than hung (passed cleanly at 48.3s with more headroom) —
+  // raised again with real margin rather than chasing the exact number.
+  timeout: 90_000,
+  // Separate from the 60s test timeout above: this is the ceiling on each
+  // individual `expect(...).toBeVisible()`-style assertion, and Playwright's
+  // own default (5s) is what every intermittent admin-page failure in this
+  // sandbox actually hit — not the overall test timeout. An admin page's
+  // client component (e.g. ReportsQueue, PendingReviewQueue) fetches its
+  // own data after mount; on a cold `next dev` compile of that route plus
+  // its API route, that fetch can take longer than 5s even though the test
+  // as a whole has plenty of budget left. Confirmed via the failure
+  // snapshots: the page was mid "جارٍ التحميل..." (loading), not stuck or
+  // broken, at the moment the assertion gave up.
+  expect: {
+    timeout: 15_000,
+  },
   use: {
     baseURL: "http://localhost:3000",
     trace: "on-first-retry",
