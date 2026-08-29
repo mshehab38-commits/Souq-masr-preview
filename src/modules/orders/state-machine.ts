@@ -61,3 +61,24 @@ const TERMINAL_STATUSES: OrderStatus[] = ["CANCELLED", "FAILED", "COMPLETED", "R
 export function isTerminalStatus(status: OrderStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
 }
+
+// Canonical Arabic labels for OrderStatus — the single source of truth so
+// the order-status-change notification and the order UI never drift apart.
+// UI-only presentation (badge color) stays in src/app/orders/, which
+// re-exports this.
+export const ORDER_STATUS_LABELS: Record<string, string> = {
+  PENDING: "قيد الانتظار",
+  CONFIRMED: "تم التأكيد",
+  PREPARING: "قيد التجهيز",
+  READY_FOR_PICKUP: "جاهز للاستلام من الشحن",
+  PICKED_UP: "تم استلامه من الشحن",
+  IN_TRANSIT: "في الطريق",
+  OUT_FOR_DELIVERY: "خارج للتوصيل",
+  DELIVERED: "تم التوصيل",
+  COMPLETED: "مكتمل",
+  CANCELLED: "ملغي",
+  FAILED: "فشل",
+  RETURNED: "مرتجع",
+  REFUNDED: "تم الاسترداد",
+  DISPUTED: "متنازع عليه",
+};

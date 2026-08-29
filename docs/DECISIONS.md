@@ -388,3 +388,40 @@ verification request submitted by (or on behalf of) an `ADMIN`/
 role. The check is a plain equality, not a role hierarchy comparison,
 deliberately, since this codebase has no other place that needs to
 reason about role ordering.
+
+## Notifications are in-app only — no email/SMS channel yet
+
+Phase 7 needed to tell users about events (new order, status change,
+report resolved, verification decided) that they previously only found
+out about by checking their own pages. Building this required deciding
+*how* to deliver it. Real email/SMS delivery needs an actual provider
+decision (which email service, or extending `SmsProvider` beyond OTP) —
+the same category of gap as Paymob in Phase 5: buildable, but only ever
+selected once real credentials/a provider choice exist, never
+fabricated. In-app notifications need no such credential and deliver
+real, working value today, so Phase 7 scope is in-app only; external
+channels are deferred, not attempted with a fake/console-log provider
+that would look real but do nothing.
+
+## `ORDER_STATUS_LABELS` is intentionally duplicated between the `orders` module and its app-layer file, not shared through `service.ts`
+
+While wiring the order-status-change notification, the same Arabic
+label map already existed in `src/app/orders/order-status-labels.ts`
+(client-component-facing) as a standalone object. The first attempt
+re-exported it from `@/modules/orders/service` to avoid duplicating the
+text. That broke the client bundle: `orders/service.ts` statically
+re-exports `checkout.ts`/`transitions.ts`, which import
+`catalog/service.ts` → `catalog/listings.ts` → `jobs/queues.ts` →
+`bullmq`, which needs Node's `child_process` — reachable from a client
+component (`OrderActions.tsx`) that only wanted a plain string lookup.
+Caught immediately by the Playwright suite (Next.js's dev server surfaced
+a "Module not found: Can't resolve 'child_process'" build error on
+every page using that component). Fixed by reverting to two independent
+copies of the label map — one in `state-machine.ts` (used server-side by
+the notification title), one in the app-layer file (used by client
+components) — rather than routing presentation text through a module
+barrel that isn't safe to import from the browser. The lesson generalizes:
+a `service.ts` barrel's safety for client-side import depends on
+*everything* it statically re-exports, not just the one export a caller
+wants — any module whose barrel touches a queue/worker file is unsafe to
+import, even partially, from `src/app/` client components.

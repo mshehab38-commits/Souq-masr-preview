@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import type { FulfillmentMode } from "@prisma/client";
 import { resolveShippingFee, computeShippingCommission } from "@/modules/shipping/service";
 import { getPaymentProvider, isOnlinePaymentConfigured } from "@/modules/payments/service";
+import { createNotification } from "@/modules/notifications/service";
 
 export interface CheckoutInput {
   listingId: string;
@@ -93,6 +94,14 @@ export async function createOrder(buyerId: string, input: CheckoutInput): Promis
   });
 
   await prisma.order.update({ where: { id: order.id }, data: { paymentStatus: payment.paymentStatus } });
+
+  await createNotification({
+    userId: listing.ownerId,
+    type: "NEW_ORDER",
+    title: "لديك طلب جديد",
+    body: `طلب جديد على إعلان "${listing.title}"`,
+    link: `/orders/${order.id}`,
+  });
 
   return { success: true, orderId: order.id, redirectUrl: payment.redirectUrl };
 }

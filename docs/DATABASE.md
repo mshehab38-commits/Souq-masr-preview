@@ -317,3 +317,19 @@ automated `SYSTEM` actions, so they were never meant to be conflated.
   of type `BUSINESS` where the user's role is still `INDIVIDUAL` — promotes
   `role` to `BUSINESS`. It never touches an `ADMIN`/`MODERATOR` user's
   role, and refuses to re-review an already-decided request.
+
+## Notifications (Phase 7)
+
+- **`Notification`** (migration `20260829130000_add_notifications`) —
+  in-app only; there is no email/SMS channel for general notifications
+  (`SmsProvider` is OTP-only). `type` is a fixed `NotificationType` enum
+  (`NEW_ORDER`/`ORDER_STATUS_CHANGED`/`LISTING_REMOVED`/
+  `REPORT_RESOLVED`/`VERIFICATION_REVIEWED`). `link`, if set, is always
+  an in-app path (e.g. `/orders/[id]`) — never an external URL, so
+  there's no open-redirect surface through a notification. `readAt`
+  starts `null`; `createNotification()` is the single write path, called
+  from `orders` (new order → seller; status change → whichever of
+  buyer/seller didn't trigger it, or both for an admin/system-driven
+  transition), `moderation` (report resolved → reporter; listing
+  removed → the listing's owner), and `identity` (verification decision
+  → the requesting user).

@@ -7,13 +7,13 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-29 (Phase 6 completion)
+Last updated: 2026-08-29 (Phase 7 completion)
 
 ## Current Status
 
-**Phase 6 (Trust & Safety + Broader Admin: user management, listing
-moderation via reports, verification review) is COMPLETE, validated,
-committed, and pushed.**
+**Phase 7 (Notifications: in-app notifications for order status
+changes, new orders, resolved reports, and verification decisions) is
+COMPLETE, validated, committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the branch with all
 real engineering work — the GitHub `main` branch has only ever held the
@@ -51,8 +51,9 @@ tasks to be framed across disciplines).
 | 3 | Listings, images (storage + processing pipeline), search, favorites | `e2bcff8`, `d69b031` | Done |
 | 4 | Seller dashboard, stores, bulk listing management, expiry sweep | `0185481` | Done |
 | 5 | Orders, checkout, payments abstraction, shipping model, subscriptions, ledger | `6bb0f47`, `b3a9c91` | Done |
-| 6 | Trust & Safety + broader Admin: user directory/suspend/ban, listing reports & moderation queue, verification-request review | `4049a22` + this session | **Done** |
-| 7–9 | Notifications, Observability/Launch, remaining roadmap items (see Deferred below) | — | Not started |
+| 6 | Trust & Safety + broader Admin: user directory/suspend/ban, listing reports & moderation queue, verification-request review | `4049a22`, `9b1315c` | Done |
+| 7 | Notifications: in-app notification bell, order/report/verification trigger wiring | this session | **Done** |
+| 8–9 | Observability/Launch, remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -185,6 +186,55 @@ then broke a later Prisma query in the wrong place, several steps away
 from the actual mistake. Always use one of the four valid prefixes in
 test fixtures.
 
+## What Was Completed in Phase 7
+
+- **Data model** (1 migration, `20260829130000_add_notifications`): new
+  `Notification` model + `NotificationType` enum. In-app only — no
+  email/SMS channel exists for general notifications (see
+  `docs/DECISIONS.md`).
+- **New `notifications` module**: `createNotification` (the single
+  write path), `listNotifications`, `getUnreadCount`, `markAsRead`
+  (ownership-scoped), `markAllAsRead`.
+- **Trigger wiring** into existing flows — no new UI-facing flows, only
+  side effects added to what already existed:
+  - `orders/checkout.ts`: a new order notifies the listing's owner
+    (`NEW_ORDER`).
+  - `orders/transitions.ts`: a status change notifies whichever of
+    buyer/seller didn't trigger it themselves — both, for an
+    admin/system-driven transition (`ORDER_STATUS_CHANGED`).
+  - `moderation/reports.ts`: resolving a report notifies the reporter
+    (`REPORT_RESOLVED`); resolving with `REMOVE_LISTING` also notifies
+    the listing's owner (`LISTING_REMOVED`).
+  - `identity/verification.ts`: a verification decision notifies the
+    requesting user (`VERIFICATION_REVIEWED`).
+- **API routes**: `GET /api/notifications`, `PATCH
+  /api/notifications/[id]`, `POST /api/notifications/read-all`.
+- **UI**: a `NotificationBell` component in `SiteHeader` (unread-count
+  badge, dropdown list, mark-read-on-click, mark-all-read, 30s poll) —
+  visible to any logged-in user on every page.
+
+## Bug Found and Fixed in Phase 7
+
+**A client-bundle break from a well-intentioned de-duplication.**
+`src/app/orders/order-status-labels.ts` (imported by the client
+component `OrderActions.tsx`) originally hardcoded its own copy of the
+Arabic order-status labels. While wiring the Phase 7 status-change
+notification (which needed the same labels server-side), the first
+attempt re-exported the app-layer file's labels from
+`@/modules/orders/service` to avoid the duplication. That barrel
+statically re-exports `checkout.ts`/`transitions.ts`, which import
+`catalog/service.ts` → `catalog/listings.ts` → `jobs/queues.ts` →
+`bullmq`, which needs Node's `child_process` — unreachable from a
+browser bundle. Next.js's dev server immediately surfaced a "Module not
+found: Can't resolve 'child_process'" build error on every page using
+`OrderActions.tsx`, caught by the Playwright suite (3 of 5 e2e specs
+failed with the `/login` page timing out, since `SiteHeader` — rendered
+on every page — didn't itself trigger the error, but any order page
+did, and the shared dev bundle broke for the whole app). Fixed by
+reverting to two independent copies of the label map (documented in
+`docs/DECISIONS.md`) rather than routing presentation text through a
+module barrel unsafe for client-side import.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -215,35 +265,34 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 11 migrations applied, schema at `prisma/schema.prisma`. See
+- 12 migrations applied, schema at `prisma/schema.prisma`. See
   `docs/DATABASE.md` for full entity documentation.
 
-## Tests & Results (Phase 6, all green)
+## Tests & Results (Phase 7, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (193 modules, 628 dependencies).
-- `npm test` — **221/221 unit tests passing** across 27 files. New this
-  phase: `tests/moderation/moderation.test.ts`,
-  `tests/identity/admin.test.ts`, `tests/catalog/admin-remove.test.ts`
-  (30 new tests).
-- `npx playwright test` — **5/5 e2e specs passing**: the four Phase 1-5
-  specs plus new `moderation-flow.spec.ts` (buyer reports a listing →
-  it appears in the admin reports queue → admin resolves it with
-  "remove listing" → the listing 404s on its public detail page).
-- `npm run build` — clean production build (50 routes, up from 43).
-- Manually/adversarially verified: the `Report` `CHECK` constraint
-  actually rejects a row with an inconsistent `targetType`/FK pairing
-  (tested directly via `psql`, not just relied on); the whole Phase 5
-  test/e2e suite (191 unit + 4 e2e) still passes unmodified, confirming
-  no regression from the `/admin` layout's auth relaxation.
+- `npm run boundaries` — no violations (199 modules, 649 dependencies).
+- `npm test` — **236/236 unit tests passing** across 29 files. New this
+  phase: `tests/notifications/notifications.test.ts` (module),
+  `tests/notifications/triggers.test.ts` (integration — asserts a
+  `Notification` row actually appears after checkout, a transition, a
+  report resolution, and a verification decision) (15 new tests).
+- `npx playwright test` — **5/5 e2e specs passing** (all Phase 1-6
+  specs, re-verified after the client-bundle fix below — this is what
+  caught the bug in the first place).
+- `npm run build` — clean production build (53 routes, up from 50).
+- Adversarially re-validated after the client-bundle bug (see "Bug
+  Found and Fixed in Phase 7" above): full `npm run build` +
+  `npx playwright test` re-run from clean, both green.
 
 ## Known Issues
 
 ### Open
 
-- None. (The `OrderCancelledBy` and `ShippingRate` issues above were
-  found and fixed within this same development pass, never shipped.)
+- None. (The `OrderCancelledBy`/`ShippingRate` issues from Phase 5 and
+  the client-bundle issue from Phase 7 were all found and fixed within
+  their own development pass, never shipped.)
 
 ### Deferred (not bugs — explicit scope decisions)
 
@@ -278,10 +327,18 @@ runtime bug. Fixed by moving the fallback rate onto
   succession. Proportionate for this phase's launch scope; add IP/user
   rate limiting (mirroring the existing OTP rate limiter pattern in
   `src/modules/identity/otp.ts`) if abuse is observed in practice.
-- **No notification fires when a report is resolved or a verification
-  request is decided** — the affected user finds out only by checking
-  their own listing/profile state. This is exactly the gap Phase 7
-  (Notifications) is scoped to close.
+- ~~No notification fires when a report is resolved or a verification
+  request is decided~~ — **resolved in Phase 7**: both now fire an
+  in-app `Notification`.
+- **Notifications are in-app only** — no email/SMS delivery for
+  anything except OTP. Needs a provider decision (which email service,
+  or extending `SmsProvider`) before real external delivery can be
+  built — the same category of gap as Paymob. See
+  `docs/DECISIONS.md`.
+- **No notification preferences/mute** — every trigger always fires for
+  every user; there's no way for a user to opt out of a notification
+  type. Not urgent at current volume; revisit if it becomes a
+  complaint.
 
 ## Technical/Architecture Decisions (Phase 5)
 
@@ -327,6 +384,24 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   still-`INDIVIDUAL` user — it can never downgrade an `ADMIN`/
   `MODERATOR` account's role.
 
+## Technical/Architecture Decisions (Phase 7)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- Notifications are in-app only this phase — external delivery
+  (email/SMS) needs a real provider decision, not a fabricated one, the
+  same principle already applied to Paymob.
+- `ORDER_STATUS_LABELS` is intentionally duplicated between
+  `state-machine.ts` (server-side) and the app-layer
+  `order-status-labels.ts` (client-side), not shared through
+  `orders/service.ts` — that barrel statically pulls in BullMQ via
+  `checkout.ts`/`transitions.ts` → `catalog`, which is unsafe to import
+  from a client component. Caught by the Playwright suite; see "Bug
+  Found and Fixed in Phase 7" above.
+- Order-status-change notifications go to whichever of buyer/seller
+  didn't trigger the transition themselves (both, for an admin/system
+  actor) — the actor already knows about their own action.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -365,9 +440,9 @@ all, which the owner ruled out entirely):
   yet (see Deferred above) — still not urgent.
 
 **No new OWNER DECISION REQUIRED items are open right now.** Nothing in
-Phase 5 or Phase 6 required inventing a financial value; every
-configurable field defaults to null/0/fail-open until the owner sets it
-via the admin console.
+Phases 5-7 required inventing a financial value; every configurable
+field defaults to null/0/fail-open until the owner sets it via the
+admin console.
 
 ## Blockers
 
@@ -375,17 +450,17 @@ None.
 
 ## Exact Next Action
 
-Phase 6 is committed and pushed. Per the standing execution rule (one
-phase at a time, validate, stop for approval), **this session stops
-here** — awaiting the owner's direction on what to build next. The
-strongest candidate, based on what's genuinely missing today (see
-"Deferred" above): **Phase 7 (Notifications)** — an in-app/email
-notification when an order's status changes, a listing sells, a report
-is resolved, or a verification request is decided, since right now a
-user only ever finds any of that out by checking their own pages. Other
-options: filling in a Deferred item from Phase 5 (e.g. wiring real
-Paymob credentials once the owner has them), or Phase 8
-(Observability — Sentry is an installed-but-never-initialized
-dependency; see `docs/ARCHITECTURE.md`). Read this file + `docs/*` fresh
-at the start of that session and confirm current git state matches this
-document before writing any code.
+Phase 7 is committed and pushed. The strongest remaining candidate,
+based on what's genuinely missing today: **Phase 8 (Observability)** —
+`@sentry/nextjs` is an installed-but-never-initialized dependency (no
+`sentry.client.config.ts`/`sentry.server.config.ts`/
+`instrumentation.ts` exist); real error tracking would need a Sentry
+DSN (an owner/production-credentials decision, same category as
+Paymob), but structured logging, a request-id/correlation convention,
+and wiring the existing `src/lib/logger.ts` more consistently across
+routes can all proceed without one. Other options: real email/SMS
+notification delivery (needs a provider decision — see
+`docs/DECISIONS.md`), or a Deferred item from Phase 5 (wiring real
+Paymob credentials once the owner has them). Read this file + `docs/*`
+fresh at the start of that session and confirm current git state
+matches this document before writing any code.

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getCurrentUser } from "@/modules/identity/service";
 import { Logo } from "@/components/brand/Logo";
 import { Button } from "@/components/ui/Button";
+import { NotificationBell } from "@/components/NotificationBell";
 
 export async function SiteHeader() {
   const user = await getCurrentUser();
@@ -36,6 +37,7 @@ export async function SiteHeader() {
           <Link href="/listings/new">
             <Button size="sm">+ أضف إعلان</Button>
           </Link>
+          {user && <NotificationBell />}
           {user ? (
             <Link href="/profile" className="text-sm font-medium text-neutral-700 hover:text-teal-700">
               حسابي

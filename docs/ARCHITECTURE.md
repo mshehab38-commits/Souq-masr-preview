@@ -17,9 +17,9 @@ This is enforced mechanically, not by convention alone:
 `.dependency-cruiser.cjs` defines a forbidden rule that blocks any import
 of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
-into CI. As of Phase 6: 193 modules, 628 dependencies, zero violations.
+into CI. As of Phase 7: 199 modules, 649 dependencies, zero violations.
 
-Modules as of Phase 6:
+Modules as of Phase 7:
 
 - `src/modules/identity/` — auth, sessions, RBAC, phone verification
   (Phase 2), admin user directory/status/role management and
@@ -50,6 +50,11 @@ Modules as of Phase 6:
 - `src/modules/moderation/` — user/listing `Report`s and their
   moderator-driven resolution, composing into `catalog`'s
   `adminRemoveListing()` and `identity`'s `setUserStatus()` (Phase 6).
+- `src/modules/notifications/` — the single write path
+  (`createNotification`) for every in-app notification, plus
+  list/unread-count/mark-read queries. Called from `orders`,
+  `moderation`, and `identity` (Phase 7). No email/SMS channel exists
+  yet — see `docs/DECISIONS.md`.
 
 Cross-cutting concerns that don't belong to one domain live in `src/lib/`
 (`env`, `db`, `redis`, `queue-redis`, `logger`, `storage/`, `audit`,
@@ -194,8 +199,8 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 221 tests across 27
-  files as of Phase 6.
+  against the real dev Postgres/Redis (not mocked) — 236 tests across 29
+  files as of Phase 7.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.
 - **End-to-end** (Playwright): full golden-path flows through the real

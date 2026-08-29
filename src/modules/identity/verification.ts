@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
+import { createNotification } from "@/modules/notifications/service";
 import type { VerificationRequestType, VerificationRequestStatus } from "@prisma/client";
 
 export async function submitVerificationRequest(
@@ -104,6 +105,13 @@ export async function reviewVerificationRequest(
     targetType: "VerificationRequest",
     targetId: requestId,
     metadata: { userId: request.userId, type: request.type },
+  });
+
+  await createNotification({
+    userId: request.userId,
+    type: "VERIFICATION_REVIEWED",
+    title: decision === "APPROVED" ? "تم قبول طلب التوثيق الخاص بك" : "تم رفض طلب التوثيق الخاص بك",
+    link: "/profile",
   });
 
   return { success: true };

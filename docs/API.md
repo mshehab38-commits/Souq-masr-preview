@@ -438,3 +438,24 @@ On `APPROVED`, sets `User.commerceVerifiedAt` and, only for a `BUSINESS`
 request against a still-`INDIVIDUAL` user, promotes their role to
 `BUSINESS`. Fails `409 already_reviewed` for a request that's already
 been decided.
+
+## Notifications (Phase 7)
+
+### `GET /api/notifications`
+
+Any authenticated user. Query params: `unreadOnly` (`"true"`/omit),
+`page`. Returns `{ items, page, totalPages, totalCount, unreadCount }` —
+`unreadCount` is always the caller's total unread count regardless of
+the `unreadOnly`/pagination filters, so the UI can show a badge without
+a second request.
+
+### `PATCH /api/notifications/[id]`
+
+Any authenticated user. Marks one of the caller's own notifications as
+read (ownership scoped in the query itself — a 404 for someone else's
+notification id, never a 403 that would confirm it exists).
+
+### `POST /api/notifications/read-all`
+
+Any authenticated user. Marks every unread notification belonging to
+the caller as read. Returns `{ success: true, count }`.

@@ -48,6 +48,7 @@ model User {
   reportsMade          Report[]              @relation("ReportsMade")
   reportsReceived      Report[]              @relation("ReportsReceived")
   reportsReviewed      Report[]              @relation("ReportsReviewed")
+  notifications        Notification[]
 
   @@map("users")
 }
@@ -826,4 +827,34 @@ model Report {
   @@index([listingId])
   @@index([targetUserId])
   @@map("reports")
+}
+
+enum NotificationType {
+  NEW_ORDER
+  ORDER_STATUS_CHANGED
+  LISTING_REMOVED
+  REPORT_RESOLVED
+  VERIFICATION_REVIEWED
+}
+
+// In-app only for now — no email/SMS channel exists for general
+// notifications (SmsProvider is OTP-only). Real external delivery needs a
+// provider decision the same way payments did; see docs/DECISIONS.md.
+model Notification {
+  id     String           @id @default(cuid())
+  userId String
+  user   User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type   NotificationType
+  title  String
+  body   String?
+  // In-app path this notification points to (e.g. /orders/[id]) — never an
+  // external URL, so there is no open-redirect surface here.
+  link   String?
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
 }

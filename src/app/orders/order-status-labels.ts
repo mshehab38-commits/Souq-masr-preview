@@ -1,3 +1,11 @@
+// Deliberately not re-exported from @/modules/orders/service: that barrel
+// statically re-exports checkout.ts/transitions.ts, which pull in
+// catalog/service.ts -> jobs/queues.ts -> bullmq -> Node's child_process.
+// This file is imported by client components (OrderActions.tsx), so
+// pulling in that chain broke the client bundle. The label text is
+// duplicated (also defined in src/modules/orders/state-machine.ts for the
+// order-status-change notification's title) rather than shared through a
+// path that risks dragging server-only code into the browser bundle.
 export const ORDER_STATUS_LABELS: Record<string, string> = {
   PENDING: "قيد الانتظار",
   CONFIRMED: "تم التأكيد",

@@ -2,7 +2,8 @@ import { prisma } from "@/lib/db";
 import type { OrderStatus } from "@prisma/client";
 import { LISTING_LIFETIME_MS } from "@/modules/catalog/service";
 import { recordLedgerEntry } from "@/modules/ledger/service";
-import { canTransition, isTerminalStatus, type OrderActor } from "./state-machine";
+import { createNotification } from "@/modules/notifications/service";
+import { canTransition, isTerminalStatus, ORDER_STATUS_LABELS, type OrderActor } from "./state-machine";
 
 export function resolveActor(
   order: { buyerId: string; sellerId: string },
@@ -69,7 +70,32 @@ export async function transitionOrder(
     await recordCompletionFinancials(order.id, order.sellerId, Number(order.productPrice), order.paymentMethod);
   }
 
+  await notifyCounterparty(order, actor, input.targetStatus);
+
   return { success: true };
+}
+
+// Notifies whichever party didn't trigger the change themselves — a
+// buyer/seller already knows about their own action; an ADMIN/SYSTEM
+// transition (no real courier API exists yet, so these are currently
+// admin-driven placeholders — see state-machine.ts) notifies both.
+async function notifyCounterparty(
+  order: { id: string; buyerId: string; sellerId: string },
+  actor: OrderActor,
+  targetStatus: OrderStatus,
+): Promise<void> {
+  const title = `تحديث حالة الطلب: ${ORDER_STATUS_LABELS[targetStatus] ?? targetStatus}`;
+  const link = `/orders/${order.id}`;
+
+  const recipients: string[] = [];
+  if (actor !== "BUYER") recipients.push(order.buyerId);
+  if (actor !== "SELLER") recipients.push(order.sellerId);
+
+  await Promise.all(
+    recipients.map((userId) =>
+      createNotification({ userId, type: "ORDER_STATUS_CHANGED", title, link }),
+    ),
+  );
 }
 
 // Zero commission on the product sale, per the approved business model:

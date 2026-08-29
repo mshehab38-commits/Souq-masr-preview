@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { adminRemoveListing } from "@/modules/catalog/service";
 import { setUserStatus } from "@/modules/identity/service";
+import { createNotification } from "@/modules/notifications/service";
 import type { ReportReason, ReportStatus, ReportTargetType } from "@prisma/client";
 
 const DEFAULT_LIMIT = 20;
@@ -129,7 +130,10 @@ export async function resolveReport(
   moderatorId: string,
   resolution: ReportResolution,
 ): Promise<{ success: true } | { success: false; error: "not_found" | "already_resolved" | "action_failed" }> {
-  const report = await prisma.report.findUnique({ where: { id: reportId } });
+  const report = await prisma.report.findUnique({
+    where: { id: reportId },
+    include: { listing: { select: { ownerId: true, title: true } } },
+  });
   if (!report) return { success: false, error: "not_found" };
   if (report.status !== "OPEN") return { success: false, error: "already_resolved" };
 
@@ -159,6 +163,24 @@ export async function resolveReport(
     targetId: reportId,
     metadata: { decision: resolution.decision, action: resolution.decision === "ACTION_TAKEN" ? resolution.action : undefined },
   });
+
+  await createNotification({
+    userId: report.reporterId,
+    type: "REPORT_RESOLVED",
+    title: resolution.decision === "DISMISS" ? "تم مراجعة بلاغك ولم يُتخذ إجراء" : "تم مراجعة بلاغك واتخاذ إجراء",
+  });
+
+  // The listing owner learns their listing was removed regardless of who
+  // reported it — but a suspended/banned user isn't notified (their
+  // session is already revoked and they can't act on it).
+  if (resolution.decision === "ACTION_TAKEN" && resolution.action === "REMOVE_LISTING" && report.listing) {
+    await createNotification({
+      userId: report.listing.ownerId,
+      type: "LISTING_REMOVED",
+      title: `تمت إزالة إعلانك "${report.listing.title}"`,
+      body: "تمت إزالة هذا الإعلان لمخالفته سياسات المنصة",
+    });
+  }
 
   return { success: true };
 }
