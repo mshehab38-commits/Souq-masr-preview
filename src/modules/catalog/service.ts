@@ -25,6 +25,9 @@ export {
   listListingsByOwner,
   softDeleteListing,
   adminRemoveListing,
+  flagListingForReview,
+  listPendingReviewListings,
+  decidePendingListing,
   markListingAsSold,
   incrementListingViewCount,
   bulkUpdateListings,
@@ -40,6 +43,7 @@ export type {
   BulkActionResult,
   RenewListingResult,
   SellerStats,
+  PendingReviewListingsFilter,
 } from "./listings";
 export {
   requestImageUploadTarget,

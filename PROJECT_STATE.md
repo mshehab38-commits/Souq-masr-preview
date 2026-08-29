@@ -7,13 +7,14 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-29 (Phase 9 completion)
+Last updated: 2026-08-29 (Phase 10 completion)
 
 ## Current Status
 
-**Phase 9 (Launch readiness: responsive mobile navigation for
-`SiteHeader`, a notification-dropdown overflow fix, and rate limiting on
-`POST /api/reports`) is COMPLETE, validated, committed, and pushed.**
+**Phase 10 (Proactive moderation: a reversible "flag for review" escalation
+for reported listings, a pending-review admin queue, and a real
+access-control gap fixed in `getListingById`) is COMPLETE, validated,
+committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the branch with all
 real engineering work — the GitHub `main` branch has only ever held the
@@ -54,8 +55,9 @@ tasks to be framed across disciplines).
 | 6 | Trust & Safety + broader Admin: user directory/suspend/ban, listing reports & moderation queue, verification-request review | `4049a22`, `9b1315c` | Done |
 | 7 | Notifications: in-app notification bell, order/report/verification trigger wiring | `163b5f4` | Done |
 | 8 | Observability: request-id + lifecycle logging (all API routes), safe-logging audit/fix, job lifecycle logging, error boundaries, Sentry architecture | `28bd03f` | Done |
-| 9 | Launch readiness: responsive mobile navigation, notification-dropdown overflow fix, report rate limiting | this session | **Done** |
-| 10 | Remaining roadmap items (see Deferred below) | — | Not started |
+| 9 | Launch readiness: responsive mobile navigation, notification-dropdown overflow fix, report rate limiting | `286299a` | Done |
+| 10 | Proactive moderation: flag-for-review escalation, pending-review admin queue, listing visibility gating fix | this session | **Done** |
+| 11 | Remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -326,6 +328,37 @@ before and after.
   the direct fix for the one genuine mobile-responsiveness gap that
   existed.
 
+## What Was Completed in Phase 10
+
+- **Flag-for-review escalation**: `flagListingForReview()`
+  (`src/modules/catalog/listings.ts`) moves an `ACTIVE` listing to
+  `PENDING_REVIEW` — a reversible alternative to `adminRemoveListing` for
+  an ambiguous report. Exposed as a new `resolveReport()` action
+  (`FLAG_FOR_REVIEW`) alongside the existing `REMOVE_LISTING`/
+  `SUSPEND_USER`, with a matching button ("تعليق للمراجعة") in
+  `/admin/reports`.
+- **Pending-review admin queue**: `listPendingReviewListings()` +
+  `decidePendingListing()` back a new `/admin/listings/pending-review`
+  page — a moderator approves (`ACTIVE`) or rejects (`REJECTED`) a
+  flagged listing. New routes: `GET`/`PATCH
+  /api/admin/listings/pending-review[/id]`.
+- **Notifications**: two new `NotificationType` values
+  (`LISTING_FLAGGED_FOR_REVIEW`, `LISTING_REVIEW_DECIDED`) so the seller
+  learns their listing was pulled for review, then learns the outcome.
+- **Real access-control gap fixed**: `getListingById` never filtered by
+  status for a non-owner viewer — a `DRAFT` (or now `PENDING_REVIEW`/
+  `REJECTED`) listing's ID was fetchable by anyone, including through
+  `GET /api/listings/[id]`, which had no auth check at all. Fixed by
+  gating on `status IN (ACTIVE, SOLD, EXPIRED)` for non-owners, with an
+  exception for a `MODERATOR`/`ADMIN` viewer (who needs to see flagged
+  content to moderate it). Found during this phase's own audit, not
+  reported by anyone — see `docs/DECISIONS.md`.
+- **`playwright.config.ts`**: global test timeout raised from the default
+  30s to 60s — a pre-existing, unrelated spec
+  (`store-management-flow.spec.ts`) was intermittently timing out on this
+  sandbox's cold `next dev` compile cost across several routes in one
+  test, not a real hang; see `docs/DECISIONS.md`.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -356,28 +389,34 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 12 migrations applied (unchanged this phase — Phase 8 is
-  application-layer only, no schema change), schema at
+- 13 migrations applied — this phase added
+  `20260829074331_add_listing_review_notification_types`
+  (`NotificationType` gains `LISTING_FLAGGED_FOR_REVIEW`/
+  `LISTING_REVIEW_DECIDED`; no other schema change — `PENDING_REVIEW`/
+  `REJECTED` on `ListingStatus` already existed since Phase 3). Schema at
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
-## Tests & Results (Phase 9, all green)
+## Tests & Results (Phase 10, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (209 modules, 722 dependencies).
-- `npm test` — **244/244 unit tests passing** across 30 files. New this
-  phase: 2 tests in `tests/moderation/moderation.test.ts` (rate-limits a
-  reporter after 20 reports against different targets; a deduped report
-  does not count against the limit).
-- `npx playwright test` — **6/6 e2e specs passing**. New this phase:
-  `e2e/mobile-nav.spec.ts` (at a 375×667 viewport: desktop nav link is
-  hidden, hamburger button is visible, opening it reveals a working
-  mobile nav, and its link navigates correctly). All 5 pre-existing specs
-  pass unmodified.
-- `npm run build` — clean, warning-free production build, same route
-  count as Phase 8 (no new routes this phase, only markup/logic changes
-  to existing pages and one existing route's status-code mapping).
+- `npm run boundaries` — no violations (213 modules, 737 dependencies).
+- `npm test` — **259/259 unit tests passing** across 31 files. New this
+  phase: `tests/catalog/pending-review.test.ts` (11 tests — flagging,
+  approve/reject, the pending-review queue query, and
+  `getListingById`'s visibility gating for owner/anonymous/moderator
+  viewers), plus 4 new tests in `tests/moderation/moderation.test.ts`
+  (`resolveReport` with `FLAG_FOR_REVIEW`; `decidePendingListing`
+  approve/reject/not-found, including audit-log and notification
+  assertions).
+- `npx playwright test` — **7/7 e2e specs passing**. New this phase:
+  `e2e/pending-review-flow.spec.ts` (flag a reported listing for review →
+  confirm it 404s for an anonymous viewer but stays visible to the admin
+  → approve it from the pending-review queue → confirm it's public again).
+  All 6 pre-existing specs pass unmodified.
+- `npm run build` — clean, warning-free production build, 3 new routes
+  (`/admin/listings/pending-review` page + its two API routes).
 
 ### Tests & Results (Phase 8, for reference)
 
@@ -405,8 +444,9 @@ runtime bug. Fixed by moving the fallback rate onto
 
 - None. (The `OrderCancelledBy`/`ShippingRate` issues from Phase 5, the
   client-bundle issue from Phase 7, the OTP-logging issue from Phase 8,
-  and the `withApiHandler` generic-default issue from Phase 8 were all
-  found and fixed within their own development pass, never shipped.)
+  the `withApiHandler` generic-default issue from Phase 8, and the
+  `getListingById` visibility gap from Phase 10 were all found and fixed
+  within their own development pass, never shipped.)
 
 ### Deferred (not bugs — explicit scope decisions)
 
@@ -442,11 +482,16 @@ runtime bug. Fixed by moving the fallback rate onto
   real credentials exist. Verify the exact request/response shape and
   the webhook HMAC field order against Paymob's current sandbox before
   relying on it in production.
-- **Moderation is reactive (report-driven) only** — there is no
-  proactive pre-publish review queue; listings still go straight to
-  `ACTIVE` on creation. `ListingStatus.PENDING_REVIEW` exists in the
-  schema for exactly this future use, unused until a pre-publish queue
-  is actually built.
+- **New listings still publish straight to `ACTIVE`; there is no
+  mandatory pre-publish review gate** — Phase 10 gave moderators a
+  reversible `PENDING_REVIEW` escalation (`FLAG_FOR_REVIEW`, off a
+  report) as a genuine third option alongside dismiss/remove, so
+  `ListingStatus.PENDING_REVIEW`/`REJECTED` are no longer unused — but
+  this stays report-driven, not gate-on-every-listing. Deliberately not
+  built as a mandatory gate: forcing every new listing through moderator
+  approval before it's visible is a real product/velocity trade-off (core
+  marketplace loop vs. trust posture), not a pure technical call — flag as
+  **OWNER DECISION REQUIRED** if the owner wants that stronger posture.
 - ~~No rate limiting on `POST /api/reports` beyond same-target dedupe~~ —
   **resolved in Phase 9**: a per-reporter Redis sliding-window limit (20
   reports/hour, mirroring the OTP rate limiter) now blocks spamming
@@ -569,6 +614,30 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   never on the dedupe (`alreadyOpen: true`) path — re-reporting the same
   target isn't the abuse pattern being guarded against.
 
+## Technical/Architecture Decisions (Phase 10)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `FLAG_FOR_REVIEW` is a new, distinct `resolveReport()` action, not a
+  variant of `REMOVE_LISTING` — the two have different reversibility
+  (`deletedAt` set vs. not) and that difference stays visible at the call
+  site rather than hidden behind a boolean flag.
+- `decidePendingListing` is its own standalone moderator action off a new
+  queue, not folded into `resolveReport` — by the time a listing is
+  decided it may have multiple reports against it, or none tied to the
+  specific decision; the queue works off the listing's own status.
+- `getListingById` now takes the viewer's id *and* role, gating
+  visibility on both ownership and a `MODERATOR`/`ADMIN` override — not
+  just an owner check — because a moderator genuinely needs to see
+  content they're moderating, not just their own.
+- Deliberately did **not** make pre-publish review mandatory for every
+  new listing — that's a product/velocity trade-off, not a technical one;
+  flagged as a possible future **OWNER DECISION REQUIRED** in Known
+  Issues rather than decided unilaterally.
+- Playwright's global test timeout raised to 60s after confirming a
+  pre-existing spec's intermittent failure was cold-compile time on this
+  sandbox, not a real hang.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -638,7 +707,7 @@ None.
 
 ## Exact Next Action
 
-Phase 9 is committed and pushed. Per the standing execution rule (one
+Phase 10 is committed and pushed. Per the standing execution rule (one
 phase at a time, validate, stop for approval), **this session stops
 here**, awaiting direction on what to build next. Candidates, in rough
 priority order given what's genuinely missing today:
@@ -653,9 +722,13 @@ priority order given what's genuinely missing today:
 - **`withSentryConfig` + source-map upload** — needs
   `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN`, separate from the
   DSN; a follow-up once Sentry itself is activated.
+- **Mandatory pre-publish moderation** (every new listing held for
+  approval before going `ACTIVE`, vs. today's report-driven
+  `FLAG_FOR_REVIEW`) — a genuine product/velocity trade-off, flagged as a
+  possible **OWNER DECISION REQUIRED** in Known Issues; not started.
 - A Deferred item from Phase 5 (wiring real Paymob credentials once the
-  owner has them) or Phase 6 (a proactive pre-publish moderation queue,
-  vs. today's reactive report-driven one).
+  owner has them, verifying the integration against Paymob's live
+  sandbox).
 
 Read this file + `docs/*` fresh at the start of that session and confirm
 current git state matches this document before writing any code.

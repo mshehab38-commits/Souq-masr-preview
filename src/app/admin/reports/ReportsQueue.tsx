@@ -119,6 +119,16 @@ export function ReportsQueue() {
             {report.targetType === "LISTING" && (
               <Button
                 size="sm"
+                variant="outline"
+                loading={actingOn === report.id}
+                onClick={() => resolve(report.id, { decision: "ACTION_TAKEN", action: "FLAG_FOR_REVIEW" })}
+              >
+                تعليق للمراجعة
+              </Button>
+            )}
+            {report.targetType === "LISTING" && (
+              <Button
+                size="sm"
                 variant="danger"
                 loading={actingOn === report.id}
                 onClick={() => resolve(report.id, { decision: "ACTION_TAKEN", action: "REMOVE_LISTING" })}

@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
 import { recordAudit } from "@/lib/audit";
-import { adminRemoveListing } from "@/modules/catalog/service";
+import { adminRemoveListing, flagListingForReview, decidePendingListing as decidePendingListingInCatalog } from "@/modules/catalog/service";
 import { setUserStatus } from "@/modules/identity/service";
 import { createNotification } from "@/modules/notifications/service";
 import type { ReportReason, ReportStatus, ReportTargetType } from "@prisma/client";
@@ -131,7 +131,7 @@ export async function listReports(filter: ListReportsFilter) {
 
 export type ReportResolution =
   | { decision: "DISMISS"; notes?: string }
-  | { decision: "ACTION_TAKEN"; action?: "REMOVE_LISTING" | "SUSPEND_USER"; notes?: string };
+  | { decision: "ACTION_TAKEN"; action?: "REMOVE_LISTING" | "SUSPEND_USER" | "FLAG_FOR_REVIEW"; notes?: string };
 
 // Moderator/admin. Performs the requested action first (if any) and only
 // marks the report resolved once it succeeds, so a failed action leaves
@@ -160,8 +160,10 @@ export async function resolveReport(
     const actionSucceeded =
       resolution.action === "REMOVE_LISTING"
         ? Boolean(report.listingId) && (await adminRemoveListing(report.listingId as string))
-        : Boolean(report.targetUserId) &&
-          (await setUserStatus(report.targetUserId as string, "SUSPENDED", moderatorId));
+        : resolution.action === "FLAG_FOR_REVIEW"
+          ? Boolean(report.listingId) && (await flagListingForReview(report.listingId as string))
+          : Boolean(report.targetUserId) &&
+            (await setUserStatus(report.targetUserId as string, "SUSPENDED", moderatorId));
     if (!actionSucceeded) return { success: false, error: "action_failed" };
   }
 
@@ -189,9 +191,9 @@ export async function resolveReport(
     title: resolution.decision === "DISMISS" ? "تم مراجعة بلاغك ولم يُتخذ إجراء" : "تم مراجعة بلاغك واتخاذ إجراء",
   });
 
-  // The listing owner learns their listing was removed regardless of who
-  // reported it — but a suspended/banned user isn't notified (their
-  // session is already revoked and they can't act on it).
+  // The listing owner learns their listing was removed or flagged
+  // regardless of who reported it — but a suspended/banned user isn't
+  // notified (their session is already revoked and they can't act on it).
   if (resolution.decision === "ACTION_TAKEN" && resolution.action === "REMOVE_LISTING" && report.listing) {
     await createNotification({
       userId: report.listing.ownerId,
@@ -200,6 +202,49 @@ export async function resolveReport(
       body: "تمت إزالة هذا الإعلان لمخالفته سياسات المنصة",
     });
   }
+  if (resolution.decision === "ACTION_TAKEN" && resolution.action === "FLAG_FOR_REVIEW" && report.listing) {
+    await createNotification({
+      userId: report.listing.ownerId,
+      type: "LISTING_FLAGGED_FOR_REVIEW",
+      title: `تم إيقاف إعلانك "${report.listing.title}" مؤقتًا للمراجعة`,
+      body: "سيتم إعلامك بقرار المراجعة قريبًا",
+    });
+  }
+
+  return { success: true };
+}
+
+export type DecidePendingListingResult =
+  | { success: true }
+  | { success: false; error: "not_found" };
+
+// Standalone moderator action off the pending-review queue — distinct from
+// resolveReport since a flagged listing isn't necessarily tied to the report
+// that flagged it by the time it's decided (multiple reports can flag the
+// same listing; the queue works off the listing's own status).
+export async function decidePendingListing(
+  listingId: string,
+  moderatorId: string,
+  decision: "APPROVE" | "REJECT",
+): Promise<DecidePendingListingResult> {
+  const listing = await decidePendingListingInCatalog(listingId, decision);
+  if (!listing) return { success: false, error: "not_found" };
+
+  await recordAudit({
+    actorId: moderatorId,
+    action: decision === "APPROVE" ? "admin.listing.review_approve" : "admin.listing.review_reject",
+    targetType: "Listing",
+    targetId: listingId,
+  });
+
+  await createNotification({
+    userId: listing.ownerId,
+    type: "LISTING_REVIEW_DECIDED",
+    title:
+      decision === "APPROVE"
+        ? `تمت الموافقة على إعلانك "${listing.title}" وهو الآن نشط مجددًا`
+        : `تم رفض إعلانك "${listing.title}" بعد المراجعة`,
+  });
 
   return { success: true };
 }

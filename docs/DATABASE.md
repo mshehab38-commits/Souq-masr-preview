@@ -303,14 +303,12 @@ automated `SYSTEM` actions, so they were never meant to be conflated.
   pre-existing check in `session.ts` that already refuses a non-`ACTIVE`
   user's session lookup — the explicit revocation makes the cutoff
   immediate and auditable rather than relying solely on that check.
-- **`ListingStatus.PENDING_REVIEW`/`REJECTED`** — declared since Phase 3
-  but never set by any code path until now; still not wired into the
-  listing-creation flow itself (listings still publish straight to
-  `ACTIVE` — a moderation-*before*-publish queue is separate, larger
-  scope than this phase's reactive, report-driven moderation). `REMOVED`
-  (previously only reachable via a seller's own delete) is now also
-  reachable via `adminRemoveListing()`, which is deliberately not scoped
-  by `ownerId` since the caller is a moderator, not the owner.
+- **`ListingStatus.PENDING_REVIEW`/`REJECTED`** — declared since Phase 3,
+  unused until Phase 10 (see below); new listings still publish straight
+  to `ACTIVE`. `REMOVED` (previously only reachable via a seller's own
+  delete) is now also reachable via `adminRemoveListing()`, which is
+  deliberately not scoped by `ownerId` since the caller is a moderator,
+  not the owner.
 - **`VerificationRequest.reviewedBy`/`reviewedAt`** — declared since
   Phase 2, unused until now. `reviewVerificationRequest()` sets them,
   plus `User.commerceVerifiedAt` on approval, and — only for a request
@@ -333,3 +331,33 @@ automated `SYSTEM` actions, so they were never meant to be conflated.
   transition), `moderation` (report resolved → reporter; listing
   removed → the listing's owner), and `identity` (verification decision
   → the requesting user).
+
+## Proactive Moderation Queue (Phase 10)
+
+- **`ListingStatus.PENDING_REVIEW`/`REJECTED`** finally get a write path:
+  `flagListingForReview()` moves an `ACTIVE` listing to `PENDING_REVIEW`
+  (only from `ACTIVE` — flagging an already-sold/expired/removed listing
+  isn't a meaningful transition) as a new `resolveReport()` action
+  (`FLAG_FOR_REVIEW`, alongside the existing `REMOVE_LISTING`/
+  `SUSPEND_USER`) — a reversible, softer escalation than removal for an
+  ambiguous report. `decidePendingListing()` resolves it one way or the
+  other: `APPROVE` back to `ACTIVE`, `REJECT` to `REJECTED`. Unlike
+  `adminRemoveListing`, flagging never touches `deletedAt` — the listing
+  is hidden from public view purely through its `status`, so it can be
+  restored without the seller re-creating it.
+- **`NotificationType`** gained `LISTING_FLAGGED_FOR_REVIEW` and
+  `LISTING_REVIEW_DECIDED` (migration
+  `20260829074331_add_listing_review_notification_types`) so the seller
+  learns their listing was pulled for review, and later learns the
+  outcome, the same way they already learn about a removal.
+- **`getListingById` visibility gating** (application-layer, not schema):
+  a real gap found while building this — the function never filtered by
+  status for a non-owner viewer, so a `DRAFT` (or, after this phase,
+  `PENDING_REVIEW`/`REJECTED`) listing's ID could be fetched by anyone,
+  including through the documented `GET /api/listings/[id]` route, which
+  had no auth check at all. Fixed by gating on
+  `status IN (ACTIVE, SOLD, EXPIRED)` for any viewer who isn't the
+  listing's owner — with a further exception for a `MODERATOR`/`ADMIN`
+  viewer, who can see any non-deleted listing regardless of status, since
+  moderating `PENDING_REVIEW`/`REJECTED`/`DRAFT` content requires being
+  able to look at it.

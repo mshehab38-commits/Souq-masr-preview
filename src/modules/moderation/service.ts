@@ -1,2 +1,8 @@
-export { createReport, listReports, resolveReport } from "./reports";
-export type { CreateReportInput, CreateReportResult, ListReportsFilter, ReportResolution } from "./reports";
+export { createReport, listReports, resolveReport, decidePendingListing } from "./reports";
+export type {
+  CreateReportInput,
+  CreateReportResult,
+  ListReportsFilter,
+  ReportResolution,
+  DecidePendingListingResult,
+} from "./reports";

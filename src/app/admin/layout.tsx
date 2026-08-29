@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/admin/ledger", label: "الإيرادات" },
   { href: "/admin/users", label: "المستخدمون" },
   { href: "/admin/reports", label: "البلاغات" },
+  { href: "/admin/listings/pending-review", label: "إعلانات قيد المراجعة" },
   { href: "/admin/verification", label: "طلبات التوثيق" },
 ];
 

@@ -90,8 +90,11 @@ job. Returns the created listing.
 ### `GET /api/listings/[id]`
 
 Public. Returns the listing plus its images (only `READY` ones) if
-`status` is `ACTIVE`, or the full listing if the requester is the owner
-(any status). Increments `viewCount` on non-owner views.
+`status` is `ACTIVE`/`SOLD`/`EXPIRED`, or any status if the requester is
+the listing's owner or a MODERATOR/ADMIN (Phase 10 — previously this had
+no visibility check at all, so a `DRAFT` listing's ID was fetchable by
+anyone; see `docs/DECISIONS.md`). `404` otherwise. Increments `viewCount`
+on non-owner views.
 
 ### `PATCH /api/listings/[id]`
 
@@ -419,14 +422,33 @@ MODERATOR or ADMIN. Query params: `status` (default `OPEN`),
 
 ### `PATCH /api/admin/reports/[id]`
 
-MODERATOR or ADMIN for `{ decision: "DISMISS" }` or
-`{ decision: "ACTION_TAKEN", action: "REMOVE_LISTING" }`.
+MODERATOR or ADMIN for `{ decision: "DISMISS" }`,
+`{ decision: "ACTION_TAKEN", action: "REMOVE_LISTING" }`, or
+`{ decision: "ACTION_TAKEN", action: "FLAG_FOR_REVIEW" }` (Phase 10 — moves
+the listing to `PENDING_REVIEW` instead of removing it; see
+`GET`/`PATCH /api/admin/listings/pending-review` below).
 **ADMIN-only** for `{ decision: "ACTION_TAKEN", action: "SUSPEND_USER" }`
 — checked in the route handler before calling the module, on top of the
 `requireModerator()` gate every other case uses. Fails `409
 already_resolved` if the report isn't `OPEN`, or `409 action_failed` if
 the underlying listing/user action didn't succeed (report stays `OPEN`
 for retry rather than being silently closed).
+
+## Admin: Pending-Review Listings (Phase 10)
+
+### `GET /api/admin/listings/pending-review`
+
+MODERATOR or ADMIN. Query params: `page`. Returns
+`{ items, page, totalPages, totalCount }` — the moderation queue of
+listings currently `PENDING_REVIEW` (reached only via the `FLAG_FOR_REVIEW`
+report action above), ordered oldest-flagged-first.
+
+### `PATCH /api/admin/listings/pending-review/[id]`
+
+MODERATOR or ADMIN. Body: `{ decision: "APPROVE" | "REJECT" }`. `APPROVE`
+returns the listing to `ACTIVE`; `REJECT` sets it to `REJECTED`. Either
+way the seller is notified (`LISTING_REVIEW_DECIDED`). Returns
+`404 not_found` if the listing isn't currently `PENDING_REVIEW`.
 
 ## Admin: Verification Requests (Phase 6)
 

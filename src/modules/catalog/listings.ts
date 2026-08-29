@@ -68,8 +68,9 @@ export async function createListing(
     fulfillmentMode = input.fulfillmentMode;
   }
 
-  // No moderation queue exists yet (Phase 9 adds it, with an async
-  // pending-review state for flagged content) — listings publish immediately.
+  // Publishes straight to ACTIVE — this phase's pre-publish review queue
+  // (flagListingForReview/decidePendingListing below) is moderator-initiated
+  // off a report, not a mandatory gate on every new listing.
   const listing = await prisma.listing.create({
     data: {
       ownerId,
@@ -138,8 +139,18 @@ export async function updateListing(
   return { success: true };
 }
 
-export async function getListingById(id: string) {
-  return prisma.listing.findFirst({
+// Statuses visible to a non-owner viewer. DRAFT/PENDING_REVIEW/REJECTED
+// are deliberately excluded — a listing under moderation or never
+// published shouldn't be fetchable by anyone who happens to know its ID.
+// REMOVED listings are already excluded via `deletedAt`, set alongside
+// that status by adminRemoveListing.
+const PUBLICLY_VISIBLE_STATUSES = ["ACTIVE", "SOLD", "EXPIRED"];
+
+// A moderator/admin can view any non-deleted listing regardless of status —
+// they need to see PENDING_REVIEW/REJECTED/DRAFT content to actually
+// moderate it, not just the publicly-visible subset.
+export async function getListingById(id: string, viewerId?: string, viewerRole?: string) {
+  const listing = await prisma.listing.findFirst({
     where: { id, deletedAt: null },
     include: {
       images: { where: { status: "READY" }, orderBy: { sortOrder: "asc" } },
@@ -149,6 +160,12 @@ export async function getListingById(id: string) {
       owner: { select: { id: true, name: true, phone: true, commerceVerifiedAt: true } },
     },
   });
+  if (!listing) return null;
+  const isPrivileged = viewerRole === "MODERATOR" || viewerRole === "ADMIN";
+  if (listing.ownerId !== viewerId && !isPrivileged && !PUBLICLY_VISIBLE_STATUSES.includes(listing.status)) {
+    return null;
+  }
+  return listing;
 }
 
 export async function listListingsByOwner(ownerId: string) {
@@ -211,6 +228,75 @@ export async function adminRemoveListing(listingId: string): Promise<boolean> {
     data: { deletedAt: new Date(), status: "REMOVED" },
   });
   return result.count > 0;
+}
+
+// Moderator-initiated soft escalation — a reviewable alternative to
+// adminRemoveListing for an ambiguous report: the listing is hidden from
+// search/public view (see PUBLICLY_VISIBLE_STATUSES above) but not soft-
+// deleted, so it can be restored to ACTIVE without the seller re-creating
+// it. Only applies from ACTIVE — flagging an already-sold/expired/removed
+// listing isn't a meaningful transition.
+export async function flagListingForReview(listingId: string): Promise<boolean> {
+  const result = await prisma.listing.updateMany({
+    where: { id: listingId, deletedAt: null, status: "ACTIVE" },
+    data: { status: "PENDING_REVIEW" },
+  });
+  return result.count > 0;
+}
+
+export interface PendingReviewListingsFilter {
+  page?: number;
+  limit?: number;
+}
+
+const PENDING_REVIEW_DEFAULT_LIMIT = 20;
+const PENDING_REVIEW_MAX_LIMIT = 100;
+
+// The moderation queue for flagListingForReview's output — mirrors
+// listReports' pagination shape.
+export async function listPendingReviewListings(filter: PendingReviewListingsFilter = {}) {
+  const limit = Math.min(Math.max(filter.limit || PENDING_REVIEW_DEFAULT_LIMIT, 1), PENDING_REVIEW_MAX_LIMIT);
+  const page = Math.max(filter.page || 1, 1);
+  const where: Prisma.ListingWhereInput = { status: "PENDING_REVIEW", deletedAt: null };
+
+  const [items, totalCount] = await Promise.all([
+    prisma.listing.findMany({
+      where,
+      orderBy: { updatedAt: "asc" },
+      skip: (page - 1) * limit,
+      take: limit,
+      include: {
+        owner: { select: { id: true, name: true, phone: true } },
+        images: { orderBy: { sortOrder: "asc" }, take: 1 },
+      },
+    }),
+    prisma.listing.count({ where }),
+  ]);
+
+  return { items, page, totalPages: Math.max(1, Math.ceil(totalCount / limit)), totalCount };
+}
+
+// Resolves a pending-review listing one way or the other. Returns the
+// listing's id/ownerId/title (for the caller to notify the seller) or null
+// if it wasn't actually PENDING_REVIEW — same "fetch then act" shape as
+// resolveReport, so a stale/already-decided listing fails loudly instead of
+// silently no-op'ing.
+export async function decidePendingListing(
+  listingId: string,
+  decision: "APPROVE" | "REJECT",
+): Promise<{ id: string; ownerId: string; title: string } | null> {
+  const listing = await prisma.listing.findFirst({
+    where: { id: listingId, deletedAt: null, status: "PENDING_REVIEW" },
+    select: { id: true, ownerId: true, title: true },
+  });
+  if (!listing) return null;
+
+  await prisma.listing.update({
+    where: { id: listingId },
+    data: { status: decision === "APPROVE" ? "ACTIVE" : "REJECTED" },
+  });
+
+  return listing;
 }
 
 export async function markListingAsSold(listingId: string, ownerId: string): Promise<boolean> {

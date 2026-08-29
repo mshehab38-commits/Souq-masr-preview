@@ -17,7 +17,7 @@ This is enforced mechanically, not by convention alone:
 `.dependency-cruiser.cjs` defines a forbidden rule that blocks any import
 of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
-into CI. As of Phase 8: 207 modules, 716 dependencies, zero violations.
+into CI. As of Phase 10: 213 modules, 737 dependencies, zero violations.
 
 Modules as of Phase 7:
 
@@ -211,8 +211,8 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 242 tests across 30
-  files as of Phase 8.
+  against the real dev Postgres/Redis (not mocked) — 259 tests across 31
+  files as of Phase 10.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.
 - **End-to-end** (Playwright): full golden-path flows through the real
@@ -222,9 +222,13 @@ the category's `CategoryAttribute` rows fetched at request time, and
   `store-management-flow.spec.ts` (Phase 4: create a store, view it
   publicly, bulk-mark a listing sold, confirm it drops off the
   storefront), `checkout-flow.spec.ts` (Phase 5: zero-commission COD
-  checkout), and `moderation-flow.spec.ts` (Phase 6: a buyer reports a
+  checkout), `moderation-flow.spec.ts` (Phase 6: a buyer reports a
   listing, an admin resolves it by removing the listing, confirmed gone
-  from the public detail page). `e2e/global-setup.ts`/`global-teardown.ts`
+  from the public detail page), `mobile-nav.spec.ts` (Phase 9: the header
+  collapses into a working hamburger menu below the `md` breakpoint), and
+  `pending-review-flow.spec.ts` (Phase 10: a flagged listing disappears
+  from public view but stays visible to a moderator, then reappears once
+  approved from the pending-review queue). `e2e/global-setup.ts`/`global-teardown.ts`
   spawn and kill a
   real BullMQ worker process for the duration of the suite (via a
   detached process group + PID file, since Playwright's setup/teardown

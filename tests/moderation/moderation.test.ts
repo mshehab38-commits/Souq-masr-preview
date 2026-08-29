@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
-import { createReport, listReports, resolveReport } from "@/modules/moderation/reports";
+import { createReport, listReports, resolveReport, decidePendingListing } from "@/modules/moderation/reports";
 
 const createdUserIds: string[] = [];
 const createdCategoryIds: string[] = [];
@@ -261,6 +261,34 @@ describe("resolveReport", () => {
     expect(activeSessions).toBe(0);
   });
 
+  it("resolves with FLAG_FOR_REVIEW and moves the listing to PENDING_REVIEW instead of removing it", async () => {
+    const reporter = await makeUser();
+    const seller = await makeUser();
+    const moderator = await makeUser();
+    const category = await makeCategory();
+    const listing = await makeListing(seller.id, category.id);
+
+    const created = await createReport(reporter.id, {
+      targetType: "LISTING",
+      listingId: listing.id,
+      reason: "MISLEADING",
+    });
+    if (!created.success || !created.report) throw new Error("setup failed");
+
+    const result = await resolveReport(created.report.id, moderator.id, {
+      decision: "ACTION_TAKEN",
+      action: "FLAG_FOR_REVIEW",
+    });
+    expect(result).toEqual({ success: true });
+
+    const updatedListing = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+    expect(updatedListing.status).toBe("PENDING_REVIEW");
+    expect(updatedListing.deletedAt).toBeNull();
+
+    const updatedReport = await prisma.report.findUniqueOrThrow({ where: { id: created.report.id } });
+    expect(updatedReport.status).toBe("ACTION_TAKEN");
+  });
+
   it("refuses to resolve a report that's already been resolved", async () => {
     const reporter = await makeUser();
     const target = await makeUser();
@@ -280,6 +308,67 @@ describe("resolveReport", () => {
   it("returns not_found for a nonexistent report", async () => {
     const moderator = await makeUser();
     const result = await resolveReport("does-not-exist", moderator.id, { decision: "DISMISS" });
+    expect(result).toEqual({ success: false, error: "not_found" });
+  });
+});
+
+describe("decidePendingListing", () => {
+  afterEach(cleanup);
+
+  it("approves a pending listing, records an audit entry, and notifies the seller", async () => {
+    const seller = await makeUser();
+    const moderator = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "إعلان قيد المراجعة", status: "PENDING_REVIEW" },
+    });
+
+    const result = await decidePendingListing(listing.id, moderator.id, "APPROVE");
+    expect(result).toEqual({ success: true });
+
+    const updated = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+    expect(updated.status).toBe("ACTIVE");
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { actorId: moderator.id, targetId: listing.id, action: "admin.listing.review_approve" },
+    });
+    expect(audit).not.toBeNull();
+
+    const notification = await prisma.notification.findFirst({
+      where: { userId: seller.id, type: "LISTING_REVIEW_DECIDED" },
+    });
+    expect(notification).not.toBeNull();
+  });
+
+  it("rejects a pending listing and records the reject audit action", async () => {
+    const seller = await makeUser();
+    const moderator = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "إعلان آخر", status: "PENDING_REVIEW" },
+    });
+
+    const result = await decidePendingListing(listing.id, moderator.id, "REJECT");
+    expect(result).toEqual({ success: true });
+
+    const updated = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+    expect(updated.status).toBe("REJECTED");
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { actorId: moderator.id, targetId: listing.id, action: "admin.listing.review_reject" },
+    });
+    expect(audit).not.toBeNull();
+  });
+
+  it("returns not_found for a listing that isn't pending review", async () => {
+    const seller = await makeUser();
+    const moderator = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "نشط بالفعل", status: "ACTIVE" },
+    });
+
+    const result = await decidePendingListing(listing.id, moderator.id, "APPROVE");
     expect(result).toEqual({ success: false, error: "not_found" });
   });
 });

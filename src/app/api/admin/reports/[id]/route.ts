@@ -8,7 +8,7 @@ const bodySchema = z.discriminatedUnion("decision", [
   z.object({ decision: z.literal("DISMISS"), notes: z.string().trim().max(2000).optional() }),
   z.object({
     decision: z.literal("ACTION_TAKEN"),
-    action: z.enum(["REMOVE_LISTING", "SUSPEND_USER"]).optional(),
+    action: z.enum(["REMOVE_LISTING", "SUSPEND_USER", "FLAG_FOR_REVIEW"]).optional(),
     notes: z.string().trim().max(2000).optional(),
   }),
 ]);

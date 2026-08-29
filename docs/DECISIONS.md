@@ -523,3 +523,58 @@ against a target they already reported isn't the abuse pattern this
 guards against, and penalizing it would make the dedupe response itself
 feel punitive. `POST /api/reports` maps the new `rate_limited` error to
 `429`, the conventional HTTP status for exactly this case.
+
+## Flagging a listing for review is a separate status transition from removing it, not a variant of the same action
+
+Phase 6 gave moderators exactly two outcomes for a reported listing:
+dismiss the report, or permanently remove the listing (`adminRemoveListing`
+— soft-deleted, `status: REMOVED`). That's a hard binary for anything
+ambiguous: a report that might be legitimate but isn't clear-cut yet has
+no middle ground between "do nothing" and "take the listing down for
+good." Phase 10 used the `PENDING_REVIEW`/`REJECTED` `ListingStatus`
+values (declared in the schema since Phase 3, never set by any code path
+until now — see `docs/DATABASE.md`) to add a genuine third option:
+`flagListingForReview()` hides the listing from public view by status
+alone, without touching `deletedAt`, so it can be restored to `ACTIVE`
+by a later `decidePendingListing()` call without the seller having to
+re-create it. This is deliberately a *new* `resolveReport()` action
+(`FLAG_FOR_REVIEW`) alongside `REMOVE_LISTING`, not a flag on it — the
+two have different reversibility and different data-model effects
+(`deletedAt` set vs. not), and keeping them as distinct actions makes
+that visible at every call site rather than hidden behind a boolean.
+`decidePendingListing` is its own standalone moderator action (off a new
+`/admin/listings/pending-review` queue) rather than living inside
+`resolveReport`, because by the time a listing is decided it may have
+accumulated multiple reports, or none tied to the specific decision — the
+queue works off the listing's own status, not off a particular report.
+
+## `getListingById` gates visibility by status and role — a real access-control gap, not just a Phase 10 nicety
+
+While wiring `PENDING_REVIEW`/`REJECTED` above, an audit of
+`getListingById` found it had **no visibility check at all**: it filtered
+only on `deletedAt: null`, meaning a `DRAFT` listing (never published) or
+a `PENDING_REVIEW`/`REJECTED` listing (as of this phase, moderated content
+awaiting or denied publication) was fetchable by anyone who knew or
+guessed its ID — including through `GET /api/listings/[id]`, which had no
+authentication check whatsoever. Fixed by gating: a non-owner sees a
+listing only if its status is `ACTIVE`/`SOLD`/`EXPIRED` (the previously
+publicly-reachable set — deliberately unchanged, to avoid any regression
+for legitimately-public closed listings), with an explicit exception for
+a `MODERATOR`/`ADMIN` viewer, who can see any non-deleted listing
+regardless of status, since moderating hidden content requires being able
+to look at it. This is why `getListingById` and the two call sites that
+matter (`GET /api/listings/[id]`, the listing detail Server Component)
+now take the viewer's id *and* role, not just their id.
+
+## Playwright's default 30s per-test timeout was raised to 60s
+
+Discovered while validating Phase 10: `e2e/store-management-flow.spec.ts`
+(pre-existing, untouched this phase) intermittently timed out at exactly
+~30s on a fresh `next dev` server, despite every individual step in it
+being fast — it's simply the first spec in a run to touch several
+distinct routes (`/dashboard/store`, `/store/[slug]`, `/listings/mine`,
+`/api/listings/bulk`) that each pay Next.js's on-demand compile cost once.
+Confirmed by re-running the same spec with a longer timeout (passed,
+~31s total) — not a real hang or regression. Playwright's global
+`timeout` is now `60_000` in `playwright.config.ts` rather than leaving
+every multi-route spec exposed to this sandbox's cold-compile variance.

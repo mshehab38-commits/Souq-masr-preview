@@ -14,7 +14,8 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 export const GET = withApiHandler(async (_request: Request, context: RouteContext) => {
   const { id } = await context.params;
-  const listing = await getListingById(id);
+  const viewer = await getCurrentUser();
+  const listing = await getListingById(id, viewer?.id, viewer?.role);
   if (!listing) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }

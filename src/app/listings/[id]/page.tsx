@@ -13,7 +13,8 @@ import { ReportButton } from "@/components/ReportButton";
 
 export default async function ListingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const [listing, user] = await Promise.all([getListingById(id), getCurrentUser()]);
+  const user = await getCurrentUser();
+  const listing = await getListingById(id, user?.id, user?.role);
 
   if (!listing) {
     notFound();
