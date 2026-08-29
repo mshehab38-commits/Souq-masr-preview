@@ -275,3 +275,45 @@ alternate/terminal branches. `OrderCancelledBy`
 the original enum only had three values while the application's actor
 model already had four; admin overrides are audit-distinct from
 automated `SYSTEM` actions, so they were never meant to be conflated.
+
+## Trust & Safety (Phase 6)
+
+- **`Report`** (migration `20260829120000_add_reports`) — a report
+  against either a `Listing` or a `User`, never both. `targetType`
+  (`LISTING`/`USER`) selects which of the two nullable FKs
+  (`listingId`/`targetUserId`) is populated; a hand-added `CHECK`
+  constraint (`reports_target_consistency_check`, appended to the
+  migration after Prisma generated the base SQL — Prisma can't express
+  "exactly one of two nullable columns" itself) enforces this at the
+  database level, not just in application code, the same class of fix as
+  the `ShippingRate` nullable-uniqueness issue documented below.
+  `reason` is a fixed `ReportReason` enum (`SPAM`/`PROHIBITED_ITEM`/
+  `FRAUD_SCAM`/`MISLEADING`/`OFFENSIVE_CONTENT`/`DUPLICATE`/`OTHER`).
+  `status` (`OPEN`/`ACTION_TAKEN`/`DISMISSED`) starts `OPEN`;
+  `reviewedById`/`reviewedAt`/`resolutionNotes` are populated once a
+  moderator resolves it. A reporter can only ever have one `OPEN` report
+  against a given target — `createReport()` returns the existing one
+  instead of creating a duplicate.
+- **`User.role`/`User.status`** — both existed since Phase 2 but were
+  never actually set by anything until this phase: `MODERATOR` (a third
+  role alongside `INDIVIDUAL`/`BUSINESS`/`ADMIN`) and `SUSPENDED`/
+  `BANNED` (alongside `ACTIVE`) are now reachable through
+  `/admin/users`. Suspending or banning a user also revokes every
+  session they currently hold (`Session.revokedAt`), on top of the
+  pre-existing check in `session.ts` that already refuses a non-`ACTIVE`
+  user's session lookup — the explicit revocation makes the cutoff
+  immediate and auditable rather than relying solely on that check.
+- **`ListingStatus.PENDING_REVIEW`/`REJECTED`** — declared since Phase 3
+  but never set by any code path until now; still not wired into the
+  listing-creation flow itself (listings still publish straight to
+  `ACTIVE` — a moderation-*before*-publish queue is separate, larger
+  scope than this phase's reactive, report-driven moderation). `REMOVED`
+  (previously only reachable via a seller's own delete) is now also
+  reachable via `adminRemoveListing()`, which is deliberately not scoped
+  by `ownerId` since the caller is a moderator, not the owner.
+- **`VerificationRequest.reviewedBy`/`reviewedAt`** — declared since
+  Phase 2, unused until now. `reviewVerificationRequest()` sets them,
+  plus `User.commerceVerifiedAt` on approval, and — only for a request
+  of type `BUSINESS` where the user's role is still `INDIVIDUAL` — promotes
+  `role` to `BUSINESS`. It never touches an `ADMIN`/`MODERATOR` user's
+  role, and refuses to re-review an already-decided request.

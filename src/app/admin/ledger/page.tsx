@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { requireAdmin } from "@/modules/identity/service";
 import { getLedgerSummary, listLedgerEntries } from "@/modules/ledger/service";
 import { Card } from "@/components/ui/Card";
 
@@ -11,7 +13,10 @@ const TYPE_LABELS: Record<string, string> = {
   SHIPPING_COMPANY_SETTLEMENT: "تسوية شركة شحن",
 };
 
+// Financial data stays ADMIN-only even though the shared /admin layout now
+// admits MODERATOR too — see docs/DECISIONS.md.
 export default async function AdminLedgerPage() {
+  if (!(await requireAdmin())) redirect("/admin/reports");
   const [summary, entries] = await Promise.all([getLedgerSummary(), listLedgerEntries({}, 50)]);
 
   return (

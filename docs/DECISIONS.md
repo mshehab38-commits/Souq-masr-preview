@@ -312,3 +312,79 @@ mapping admin actions onto `SYSTEM`, since conflating "a person
 intervened" with "this happened automatically" would make the audit
 trail actively misleading for exactly the cases (disputes, support
 overrides) where an accurate record matters most.
+
+## `requireModerator()` and `requireAdmin()` are split, and the split lives at different layers for different pages
+
+Phase 6 needed a `MODERATOR` role (already declared in the schema since
+Phase 2, never checked anywhere) to reach the new reports queue and
+verification review, without giving it the financial/config authority
+`ADMIN` already had over settings/plans/shipping/ledger. Rather than
+inventing a permissions matrix, the shared `/admin` layout gate was
+loosened from `requireAdmin()` to the new, broader `requireModerator()`
+(`ADMIN` or `MODERATOR`), and each of the four Phase 5 financial pages
+re-checks `requireAdmin()` itself and redirects if it fails. This means
+the authorization boundary isn't in one place for every route — it's
+intentionally the looser gate at the shell plus a stricter gate on the
+pages/routes that need it, mirroring how `PATCH
+/api/admin/users/[id]` requires `requireAdmin()` even though `GET
+/api/admin/users/[id]` (same resource) only requires
+`requireModerator()`, and how `PATCH /api/admin/reports/[id]` requires
+`requireAdmin()` specifically only when the resolution action is
+`SUSPEND_USER`. The alternative — one central permission table keyed by
+route — would be more centralized but wrong for `PATCH
+/api/admin/reports/[id]`, where the required role depends on the request
+*body*, not just the route; a single gate can't express that.
+
+## Suspending/banning a user revokes sessions explicitly, even though `session.ts` already blocks them
+
+`getSessionUser()` has checked `session.user.status !== "ACTIVE"` since
+Phase 2, so a suspended/banned user's *next* request already fails
+without any Phase 6 change. `setUserStatus()` still explicitly revokes
+every active `Session` row when moving a user out of `ACTIVE`. This is
+deliberate defense-in-depth on a security-sensitive action, not
+redundant: it makes the audit trail explicit (a revoked session is
+visible in the `sessions` table, not just an implicit consequence of a
+`status` column elsewhere) and removes any dependency on that other
+check always being present/correct in the future.
+
+## `Report` targets a listing or a user, never both — enforced by a hand-added `CHECK` constraint
+
+A report needed to point at either a `Listing` or a `User`, and Prisma
+has no native way to say "exactly one of these two nullable foreign
+keys must be set, matching this enum column" — the same category of gap
+that made the original `ShippingRate` design (a nullable `governorateId`
+meant to represent "this company's default rate") unable to actually
+enforce "at most one" via `@@unique`. Rather than accept the same class
+of bug twice, the `Report` migration hand-appends a `CHECK` constraint
+(`reports_target_consistency_check`) after Prisma's generated SQL,
+enforcing the invariant at the database level regardless of which
+application code path writes the row. `createReport()` also validates
+the same rule in application code first, so a caller gets a clear
+`target_not_found`/discriminated-union type error rather than a raw
+Postgres constraint violation — the constraint is the backstop, not the
+primary interface.
+
+## Report resolution performs the side-effect action before marking the report resolved, not after
+
+`resolveReport()` with `action: "REMOVE_LISTING"` or `"SUSPEND_USER"`
+calls into `catalog`'s `adminRemoveListing()` or `identity`'s
+`setUserStatus()` *before* writing the report's own `status`/
+`reviewedById`/`reviewedAt` fields, and returns `action_failed` (leaving
+the report `OPEN`) if that call reports failure. The alternative order
+— mark resolved, then perform the action — risks a report silently
+sitting as "handled" in the queue while the listing is still live or the
+user still active, which is worse than a moderator seeing the same
+report again and retrying.
+
+## Verification approval promotes role only for a still-`INDIVIDUAL` user, never touches `ADMIN`/`MODERATOR`
+
+`reviewVerificationRequest()` sets `User.role = "BUSINESS"` on a `BUSINESS`
+verification approval, but only when the user's *current* role is still
+`INDIVIDUAL`. `role` had never been set to anything but its default by
+any code path before this phase, so this is a low-risk, additive change
+in isolation — but the explicit guard exists so that a business-type
+verification request submitted by (or on behalf of) an `ADMIN`/
+`MODERATOR` account can never accidentally downgrade their operational
+role. The check is a plain equality, not a role hierarchy comparison,
+deliberately, since this codebase has no other place that needs to
+reason about role ordering.

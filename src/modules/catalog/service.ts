@@ -24,6 +24,7 @@ export {
   getListingById,
   listListingsByOwner,
   softDeleteListing,
+  adminRemoveListing,
   markListingAsSold,
   incrementListingViewCount,
   bulkUpdateListings,

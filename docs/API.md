@@ -370,3 +370,71 @@ Admin-only. Returns `{ summary, recentEntries }` — total platform revenue
 broken down by type (subscriptions / shipping commission / promoted
 listings, never product-sale proceeds), plus the 50 most recent ledger
 rows for a raw audit view.
+
+## Reports (Phase 6)
+
+### `POST /api/reports`
+
+Any authenticated user. Body is a discriminated union on `targetType`:
+`{ targetType: "LISTING", listingId, reason, details? }` or
+`{ targetType: "USER", targetUserId, reason, details? }`. `reason` is one
+of `SPAM`/`PROHIBITED_ITEM`/`FRAUD_SCAM`/`MISLEADING`/
+`OFFENSIVE_CONTENT`/`DUPLICATE`/`OTHER`. Returns `404 target_not_found`
+for a nonexistent/deleted target, `400 cannot_report_self` for a
+self-targeted user report, or `201 { report, alreadyOpen }` — `alreadyOpen:
+true` means an existing `OPEN` report by this reporter against this
+target was returned instead of creating a duplicate.
+
+## Admin: Users (Phase 6)
+
+### `GET /api/admin/users`
+
+MODERATOR or ADMIN. Query params: `query` (matches phone or name),
+`status`, `role`, `page`. Returns the same `{ items, page, totalPages,
+totalCount }` shape used by search/ledger listings.
+
+### `GET /api/admin/users/[id]`
+
+MODERATOR or ADMIN. Returns `{ user, listingCount, buyerOrderCount,
+sellerOrderCount, reportsMadeCount, reportsReceivedCount }`.
+
+### `PATCH /api/admin/users/[id]`
+
+**ADMIN-only** (stricter than the `GET` above — see
+`docs/DECISIONS.md`). Body: `{ status? }` and/or `{ role? }` (at least
+one required). Setting `status` to `SUSPENDED`/`BANNED` also revokes
+every active session for that user. Setting `role` away from `ADMIN`
+fails with `409 { error: "last_admin" }` if it would leave the platform
+with zero admins.
+
+## Admin: Reports (Phase 6)
+
+### `GET /api/admin/reports`
+
+MODERATOR or ADMIN. Query params: `status` (default `OPEN`),
+`targetType`, `page`.
+
+### `PATCH /api/admin/reports/[id]`
+
+MODERATOR or ADMIN for `{ decision: "DISMISS" }` or
+`{ decision: "ACTION_TAKEN", action: "REMOVE_LISTING" }`.
+**ADMIN-only** for `{ decision: "ACTION_TAKEN", action: "SUSPEND_USER" }`
+— checked in the route handler before calling the module, on top of the
+`requireModerator()` gate every other case uses. Fails `409
+already_resolved` if the report isn't `OPEN`, or `409 action_failed` if
+the underlying listing/user action didn't succeed (report stays `OPEN`
+for retry rather than being silently closed).
+
+## Admin: Verification Requests (Phase 6)
+
+### `GET /api/admin/verification-requests`
+
+MODERATOR or ADMIN. Query params: `status` (default `PENDING`), `page`.
+
+### `PATCH /api/admin/verification-requests/[id]`
+
+MODERATOR or ADMIN. Body: `{ decision: "APPROVED" | "REJECTED", notes? }`.
+On `APPROVED`, sets `User.commerceVerifiedAt` and, only for a `BUSINESS`
+request against a still-`INDIVIDUAL` user, promotes their role to
+`BUSINESS`. Fails `409 already_reviewed` for a request that's already
+been decided.

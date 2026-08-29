@@ -201,6 +201,18 @@ export async function softDeleteListing(listingId: string, ownerId: string): Pro
   return result.count > 0;
 }
 
+// Moderator-initiated removal — deliberately not scoped by `ownerId` (the
+// caller isn't the owner), kept as its own explicit function rather than an
+// `isAdmin` branch on `softDeleteListing` so the authority behind each call
+// site stays visible at a glance.
+export async function adminRemoveListing(listingId: string): Promise<boolean> {
+  const result = await prisma.listing.updateMany({
+    where: { id: listingId, deletedAt: null },
+    data: { deletedAt: new Date(), status: "REMOVED" },
+  });
+  return result.count > 0;
+}
+
 export async function markListingAsSold(listingId: string, ownerId: string): Promise<boolean> {
   const result = await prisma.listing.updateMany({
     where: { id: listingId, ownerId, deletedAt: null },

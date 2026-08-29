@@ -17,12 +17,13 @@ This is enforced mechanically, not by convention alone:
 `.dependency-cruiser.cjs` defines a forbidden rule that blocks any import
 of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
-into CI. As of Phase 3: 102 modules, 259 dependencies, zero violations.
+into CI. As of Phase 6: 193 modules, 628 dependencies, zero violations.
 
-Modules as of Phase 5:
+Modules as of Phase 6:
 
 - `src/modules/identity/` — auth, sessions, RBAC, phone verification
-  (Phase 2).
+  (Phase 2), admin user directory/status/role management and
+  verification-request review (Phase 6).
 - `src/modules/catalog/` — listings, categories, attributes, commerce
   eligibility, images, favorites, bulk listing actions, seller stats,
   free-listing-limit enforcement (Phases 1, 3, 4 & 5).
@@ -46,6 +47,9 @@ Modules as of Phase 5:
   inert until real credentials exist) (Phase 5).
 - `src/modules/orders/` — checkout, the order state machine, and
   role-gated transitions between its states (Phase 5).
+- `src/modules/moderation/` — user/listing `Report`s and their
+  moderator-driven resolution, composing into `catalog`'s
+  `adminRemoveListing()` and `identity`'s `setUserStatus()` (Phase 6).
 
 Cross-cutting concerns that don't belong to one domain live in `src/lib/`
 (`env`, `db`, `redis`, `queue-redis`, `logger`, `storage/`, `audit`,
@@ -190,17 +194,21 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 103 tests across 17
-  files as of Phase 4.
+  against the real dev Postgres/Redis (not mocked) — 221 tests across 27
+  files as of Phase 6.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.
 - **End-to-end** (Playwright): full golden-path flows through the real
   running app — `auth-signup.spec.ts` (Phase 2),
   `listing-search-flow.spec.ts` (Phase 3: create a listing, upload an
-  image, wait for it to process to `READY`, then find it via search), and
+  image, wait for it to process to `READY`, then find it via search),
   `store-management-flow.spec.ts` (Phase 4: create a store, view it
   publicly, bulk-mark a listing sold, confirm it drops off the
-  storefront). `e2e/global-setup.ts`/`global-teardown.ts` spawn and kill a
+  storefront), `checkout-flow.spec.ts` (Phase 5: zero-commission COD
+  checkout), and `moderation-flow.spec.ts` (Phase 6: a buyer reports a
+  listing, an admin resolves it by removing the listing, confirmed gone
+  from the public detail page). `e2e/global-setup.ts`/`global-teardown.ts`
+  spawn and kill a
   real BullMQ worker process for the duration of the suite (via a
   detached process group + PID file, since Playwright's setup/teardown
   don't share process memory), so the image-processing pipeline is

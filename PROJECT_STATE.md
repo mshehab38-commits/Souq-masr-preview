@@ -7,18 +7,18 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-28 (Phase 5 completion + permanent memory files)
+Last updated: 2026-08-29 (Phase 6 completion)
 
 ## Current Status
 
-**Phase 5 (Orders, Checkout, Payments, Shipping, Subscriptions) is
-COMPLETE, validated, committed, and pushed.**
+**Phase 6 (Trust & Safety + Broader Admin: user management, listing
+moderation via reports, verification review) is COMPLETE, validated,
+committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the branch with all
 real engineering work — the GitHub `main` branch has only ever held the
 original prototype upload and is not where this project lives).
-Latest commit: see `git log -1` — two Phase 5 commits landed this round
-(the implementation, then this test/docs completion pass).
+Latest commit: see `git log -1`.
 
 **A note on how this branch got here**: this session began with the user
 worried the project might be lost, because GitHub's default view showed
@@ -50,8 +50,9 @@ tasks to be framed across disciplines).
 | 2 | Phone-OTP auth, sessions, RBAC, verification requests, audit log | `9e3539e` | Done |
 | 3 | Listings, images (storage + processing pipeline), search, favorites | `e2bcff8`, `d69b031` | Done |
 | 4 | Seller dashboard, stores, bulk listing management, expiry sweep | `0185481` | Done |
-| 5 | Orders, checkout, payments abstraction, shipping model, subscriptions, ledger | `6bb0f47` + this session's follow-up | **Done** |
-| 6–11 | Trust & Safety, Admin (broader), Notifications, Observability/Launch (remaining roadmap) | — | Not started |
+| 5 | Orders, checkout, payments abstraction, shipping model, subscriptions, ledger | `6bb0f47`, `b3a9c91` | Done |
+| 6 | Trust & Safety + broader Admin: user directory/suspend/ban, listing reports & moderation queue, verification-request review | `4049a22` + this session | **Done** |
+| 7–9 | Notifications, Observability/Launch, remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -133,7 +134,58 @@ an engineering assumption:
 - **Free-listing-limit enforcement** wired into `createListing` (fails
   open when unconfigured).
 
-## Bug Found and Fixed This Session
+## What Was Completed in Phase 6
+
+- **Data model** (1 migration, `20260829120000_add_reports`): new
+  `Report` model (`ReportTargetType`/`ReportReason`/`ReportStatus`
+  enums), with a hand-added `CHECK` constraint enforcing a report targets
+  exactly one of a listing or a user. No other schema changes — Phase 6
+  runs almost entirely on fields the schema had already scaffolded since
+  Phase 2/3 (`User.role`'s `MODERATOR` value, `User.status`'s
+  `SUSPENDED`/`BANNED`, `ListingStatus.PENDING_REVIEW`/`REJECTED`/
+  `REMOVED`, `VerificationRequest.reviewedBy`/`reviewedAt`) but had never
+  actually been wired up. See `docs/DATABASE.md`.
+- **`identity` module additions**: `listUsers`/`getUserDetail` (admin
+  directory), `setUserStatus` (suspend/ban/reactivate, with session
+  revocation), `setUserRole` (with a last-admin-lockout guard),
+  `listVerificationRequests`/`reviewVerificationRequest` (approve sets
+  `commerceVerifiedAt` + promotes `role` to `BUSINESS` for a still-
+  `INDIVIDUAL` user), and a new `requireModerator()` guard alongside the
+  existing `requireAdmin()`.
+- **`catalog` module addition**: `adminRemoveListing()` — same effect as
+  the existing owner-scoped `softDeleteListing()` but not scoped by
+  `ownerId`, since the caller is a moderator.
+- **New `moderation` module**: `createReport` (with self-report and
+  duplicate-open-report guards), `listReports`, `resolveReport`
+  (composes into `catalog`/`identity`'s services to remove a listing or
+  suspend a user as part of resolving a report).
+- **API routes**: `POST /api/reports`; `/api/admin/users` (+`/[id]`);
+  `/api/admin/reports` (+`/[id]`); `/api/admin/verification-requests`
+  (+`/[id]`) — see `docs/API.md`.
+- **UI**: `/admin/users` (+ `/[id]` detail/actions), `/admin/reports`
+  (moderation queue), `/admin/verification` (review queue); a
+  `ReportButton` component wired into `/listings/[id]` ("بلاغ عن
+  الإعلان") and `/store/[slug]` ("بلاغ عن البائع"). The shared `/admin`
+  layout now gates on `requireModerator()` instead of `requireAdmin()`,
+  with the four Phase 5 financial pages (`settings`/`plans`/`shipping`/
+  `ledger`) each re-checking `requireAdmin()` themselves — see
+  `docs/DECISIONS.md` for why the split lives at two different layers.
+
+## Notes From Phase 6
+
+No application bugs were found this phase — the schema had already
+scaffolded almost everything Phase 6 needed (see "What Was Completed"
+above), so most of the work was wiring existing fields up rather than
+new design. One test-only gotcha worth recording for future e2e specs:
+Egyptian mobile numbers only validate for the `010`/`011`/`012`/`015`
+prefixes (`src/modules/identity/phone.ts`) — an earlier draft of
+`e2e/moderation-flow.spec.ts` used `014` for a third test user, which
+`normalizeEgyptianPhone()` silently returns `null` for, and that `null`
+then broke a later Prisma query in the wrong place, several steps away
+from the actual mistake. Always use one of the four valid prefixes in
+test fixtures.
+
+## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
 cancellation logic (`data.cancelledBy = actor === "SYSTEM" ? "SYSTEM" :
@@ -163,44 +215,28 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 10 migrations applied, schema at `prisma/schema.prisma`. See
+- 11 migrations applied, schema at `prisma/schema.prisma`. See
   `docs/DATABASE.md` for full entity documentation.
 
-## Tests & Results (this session, all green)
+## Tests & Results (Phase 6, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (174 modules, 552 dependencies).
-- `npm test` — **191/191 unit tests passing** across 24 files. New this
-  phase: `tests/settings/settings.test.ts`,
-  `tests/subscriptions/subscriptions.test.ts`,
-  `tests/shipping/shipping.test.ts`, `tests/ledger/ledger.test.ts`,
-  `tests/orders/{state-machine,checkout,transitions}.test.ts` (88 new
-  tests). Cleanup blocks in these new suites are deliberately scoped by
-  relation (e.g. `{ order: { sellerId: { in: createdUserIds } } }`)
-  rather than by broad `{ fieldId: { not: null } }` filters, since
-  Vitest runs test files in parallel against the same real database —
-  an unscoped cleanup in one file could otherwise delete rows another
-  file's concurrently-running assertions depend on.
-- `npx playwright test` — **4/4 e2e specs passing**: `auth-signup.spec.ts`,
-  `listing-search-flow.spec.ts`, `store-management-flow.spec.ts`, and new
-  `checkout-flow.spec.ts` (seller creates a commerce-enabled listing →
-  buyer checks out via the real UI → order created with the full price,
-  no shipping fee, `CASH_ON_DELIVERY` → listing reserved (`SOLD`) → zero
-  ledger entries, proving the zero-commission guarantee at the UI layer,
-  not just the module layer).
-- `npm run build` — clean production build (43 routes, up from 34).
-- Manually verified end-to-end (via curl and a real browser, across this
-  session and the one before it): full COD order lifecycle produces zero
-  ledger entries; a `PLATFORM_SHIPPING` order correctly snapshots the
-  governorate-specific fee and commission; a computed shipping settlement
-  produces exactly one `SHIPPING_COMMISSION_REVENUE` ledger entry for the
-  commission only (not the full shipping fee); free-listing-limit
-  enforcement and its subscription override both work; unpriced plans/
-  unset commission rates correctly block rather than default to an
-  invented number; the admin console pages
-  (`/admin/{settings,plans,shipping,ledger}`) render and function
-  correctly, including the "⚠️ not yet configured" fail-open messaging.
+- `npm run boundaries` — no violations (193 modules, 628 dependencies).
+- `npm test` — **221/221 unit tests passing** across 27 files. New this
+  phase: `tests/moderation/moderation.test.ts`,
+  `tests/identity/admin.test.ts`, `tests/catalog/admin-remove.test.ts`
+  (30 new tests).
+- `npx playwright test` — **5/5 e2e specs passing**: the four Phase 1-5
+  specs plus new `moderation-flow.spec.ts` (buyer reports a listing →
+  it appears in the admin reports queue → admin resolves it with
+  "remove listing" → the listing 404s on its public detail page).
+- `npm run build` — clean production build (50 routes, up from 43).
+- Manually/adversarially verified: the `Report` `CHECK` constraint
+  actually rejects a row with an inconsistent `targetType`/FK pairing
+  (tested directly via `psql`, not just relied on); the whole Phase 5
+  test/e2e suite (191 unit + 4 e2e) still passes unmodified, confirming
+  no regression from the `/admin` layout's auth relaxation.
 
 ## Known Issues
 
@@ -232,6 +268,20 @@ runtime bug. Fixed by moving the fallback rate onto
   real credentials exist. Verify the exact request/response shape and
   the webhook HMAC field order against Paymob's current sandbox before
   relying on it in production.
+- **Moderation is reactive (report-driven) only** — there is no
+  proactive pre-publish review queue; listings still go straight to
+  `ACTIVE` on creation. `ListingStatus.PENDING_REVIEW` exists in the
+  schema for exactly this future use, unused until a pre-publish queue
+  is actually built.
+- **No rate limiting on `POST /api/reports` beyond same-target dedupe** —
+  a user can still open reports against many different targets in quick
+  succession. Proportionate for this phase's launch scope; add IP/user
+  rate limiting (mirroring the existing OTP rate limiter pattern in
+  `src/modules/identity/otp.ts`) if abuse is observed in practice.
+- **No notification fires when a report is resolved or a verification
+  request is decided** — the affected user finds out only by checking
+  their own listing/profile state. This is exactly the gap Phase 7
+  (Notifications) is scoped to close.
 
 ## Technical/Architecture Decisions (Phase 5)
 
@@ -251,6 +301,31 @@ See `docs/DECISIONS.md` for full rationale. Summary:
 - Admin-driven configuration (settings/plans/shipping) got a real UI in
   this phase, not just an API, since the owner needs to actually run the
   business today — it wasn't deferred to the later, broader Admin phase.
+
+## Technical/Architecture Decisions (Phase 6)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `requireModerator()` (new) and `requireAdmin()` (existing) are split
+  across different layers depending on the page/route — the shared
+  `/admin` shell uses the looser gate, financial pages and
+  status/role-changing routes re-check the stricter one themselves,
+  and `PATCH /api/admin/reports/[id]` picks between them based on the
+  request body's `action`, not just the route.
+- Suspending/banning a user explicitly revokes their sessions even
+  though `session.ts` already blocks a non-`ACTIVE` user's next request
+  — deliberate defense-in-depth and an explicit audit trail, not
+  redundancy.
+- `Report`'s listing-vs-user exclusivity is enforced by a hand-added
+  database `CHECK` constraint, not just application code — the same
+  fix pattern as the `ShippingRate` nullable-uniqueness issue from
+  Phase 5, applied proactively this time instead of after a bug.
+- Resolving a report performs the side-effect action (remove listing /
+  suspend user) *before* marking the report resolved, so a failed
+  action leaves the report `OPEN` for retry instead of silently closing.
+- Verification approval promotes `role` to `BUSINESS` only for a
+  still-`INDIVIDUAL` user — it can never downgrade an `ADMIN`/
+  `MODERATOR` account's role.
 
 ## OWNER DECISION REQUIRED — Resolved
 
@@ -290,9 +365,9 @@ all, which the owner ruled out entirely):
   yet (see Deferred above) — still not urgent.
 
 **No new OWNER DECISION REQUIRED items are open right now.** Nothing in
-Phase 5 required inventing a financial value; every configurable field
-defaults to null/0/fail-open until the owner sets it via the admin
-console.
+Phase 5 or Phase 6 required inventing a financial value; every
+configurable field defaults to null/0/fail-open until the owner sets it
+via the admin console.
 
 ## Blockers
 
@@ -300,12 +375,17 @@ None.
 
 ## Exact Next Action
 
-Phase 5 is committed and pushed. Per the standing execution rule
-(one phase at a time, validate, stop for approval), **this session stops
-here** — awaiting the owner's direction on what to build next: options
-include Trust & Safety/moderation, the broader Admin phase (user/listing
-management beyond what Phase 5 already built for commercial config),
-Notifications, or filling in one of the "Deferred" items above (e.g.
-wiring real Paymob credentials once the owner has them). Read this file +
-`docs/*` fresh at the start of that session and confirm current git state
-matches this document before writing any code.
+Phase 6 is committed and pushed. Per the standing execution rule (one
+phase at a time, validate, stop for approval), **this session stops
+here** — awaiting the owner's direction on what to build next. The
+strongest candidate, based on what's genuinely missing today (see
+"Deferred" above): **Phase 7 (Notifications)** — an in-app/email
+notification when an order's status changes, a listing sells, a report
+is resolved, or a verification request is decided, since right now a
+user only ever finds any of that out by checking their own pages. Other
+options: filling in a Deferred item from Phase 5 (e.g. wiring real
+Paymob credentials once the owner has them), or Phase 8
+(Observability — Sentry is an installed-but-never-initialized
+dependency; see `docs/ARCHITECTURE.md`). Read this file + `docs/*` fresh
+at the start of that session and confirm current git state matches this
+document before writing any code.

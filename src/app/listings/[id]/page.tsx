@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { ListingDetailActions } from "./ListingDetailActions";
 import { ListingImageUploader } from "./ListingImageUploader";
+import { ReportButton } from "@/components/ReportButton";
 
 export default async function ListingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -94,6 +95,10 @@ export default async function ListingDetailPage({ params }: { params: Promise<{ 
           )}
 
           <ListingDetailActions listingId={listing.id} isOwner={isOwner} isSold={listing.status === "SOLD"} />
+
+          {user && !isOwner && (
+            <ReportButton targetType="LISTING" listingId={listing.id} label="بلاغ عن الإعلان" />
+          )}
         </div>
       </div>
     </main>

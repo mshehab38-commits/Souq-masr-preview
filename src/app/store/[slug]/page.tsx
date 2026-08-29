@@ -2,11 +2,13 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getStoreBySlug, listStorePublicListings } from "@/modules/store/service";
+import { getCurrentUser } from "@/modules/identity/service";
 import { Card } from "@/components/ui/Card";
 import { PriceTag } from "@/components/ui/PriceTag";
 import { VerifiedBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/States";
 import { StorePaginationClient } from "./StorePaginationClient";
+import { ReportButton } from "@/components/ReportButton";
 
 const PAGE_SIZE = 20;
 
@@ -20,7 +22,7 @@ export default async function StorePage({ params, searchParams }: StorePageProps
   const { page: pageParam } = await searchParams;
   const page = Math.max(1, Number(pageParam ?? "1") || 1);
 
-  const store = await getStoreBySlug(slug);
+  const [store, user] = await Promise.all([getStoreBySlug(slug), getCurrentUser()]);
   if (!store) {
     notFound();
   }
@@ -50,6 +52,12 @@ export default async function StorePage({ params, searchParams }: StorePageProps
           {store.description && <p className="mt-1 max-w-2xl text-neutral-600">{store.description}</p>}
         </div>
       </div>
+
+      {user && user.id !== store.ownerId && (
+        <div className="mb-6">
+          <ReportButton targetType="USER" targetUserId={store.ownerId} label="بلاغ عن البائع" />
+        </div>
+      )}
 
       <p className="mb-4 text-sm text-neutral-500">{total.toLocaleString("ar-EG")} إعلان نشط</p>
 
