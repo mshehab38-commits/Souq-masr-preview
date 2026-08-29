@@ -45,7 +45,9 @@ export const POST = withApiHandler(async (request: Request) => {
 
   const result = await createReport(user.id, parsed.data);
   if (!result.success) {
-    return NextResponse.json(result, { status: result.error === "target_not_found" ? 404 : 400 });
+    const status =
+      result.error === "target_not_found" ? 404 : result.error === "rate_limited" ? 429 : 400;
+    return NextResponse.json(result, { status });
   }
 
   return NextResponse.json({ report: result.report, alreadyOpen: result.alreadyOpen }, { status: 201 });

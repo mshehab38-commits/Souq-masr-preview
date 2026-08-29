@@ -7,15 +7,13 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-29 (Phase 8 completion)
+Last updated: 2026-08-29 (Phase 9 completion)
 
 ## Current Status
 
-**Phase 8 (Observability: structured request-lifecycle logging with
-request-id correlation across all API routes, safe-error-logging audit
-and fix, background-job lifecycle logging, frontend/server exception
-boundaries, and the Sentry integration architecture) is COMPLETE,
-validated, committed, and pushed.**
+**Phase 9 (Launch readiness: responsive mobile navigation for
+`SiteHeader`, a notification-dropdown overflow fix, and rate limiting on
+`POST /api/reports`) is COMPLETE, validated, committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the branch with all
 real engineering work — the GitHub `main` branch has only ever held the
@@ -55,8 +53,9 @@ tasks to be framed across disciplines).
 | 5 | Orders, checkout, payments abstraction, shipping model, subscriptions, ledger | `6bb0f47`, `b3a9c91` | Done |
 | 6 | Trust & Safety + broader Admin: user directory/suspend/ban, listing reports & moderation queue, verification-request review | `4049a22`, `9b1315c` | Done |
 | 7 | Notifications: in-app notification bell, order/report/verification trigger wiring | `163b5f4` | Done |
-| 8 | Observability: request-id + lifecycle logging (all API routes), safe-logging audit/fix, job lifecycle logging, error boundaries, Sentry architecture | this session | **Done** |
-| 9 | Launch / remaining roadmap items (see Deferred below) | — | Not started |
+| 8 | Observability: request-id + lifecycle logging (all API routes), safe-logging audit/fix, job lifecycle logging, error boundaries, Sentry architecture | `28bd03f` | Done |
+| 9 | Launch readiness: responsive mobile navigation, notification-dropdown overflow fix, report rate limiting | this session | **Done** |
+| 10 | Remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -294,6 +293,39 @@ from logs. Fixed by removing `code` from the logged fields — zero
 functional or test impact, confirmed by the full suite passing unchanged
 before and after.
 
+## What Was Completed in Phase 9
+
+- **Responsive mobile navigation for `SiteHeader`**: the header had zero
+  responsive behavior before this phase — every nav link, the "add
+  listing" button, the notification bell, and the profile/login link were
+  all unconditionally rendered in one row, which overflows/wraps badly
+  below tablet width. Fixed with:
+  - **`src/components/layout/nav-links.ts`** (new): the single canonical
+    list of nav links/labels, shared by both the desktop nav and the new
+    mobile nav so they can never drift apart.
+  - **`src/components/layout/MobileNav.tsx`** (new): a hamburger-triggered
+    panel (click-outside-to-close), rendered only below `md`, listing the
+    same links as the desktop nav from `NAV_LINKS`.
+  - **`src/components/layout/SiteHeader.tsx`** (rewritten): desktop nav/
+    actions now `hidden ... md:flex`; a new `md:hidden` row renders the
+    notification bell + `MobileNav` on narrow viewports.
+- **`src/components/NotificationBell.tsx`**: the dropdown panel
+  (`w-80`) could overflow off-screen on a narrow viewport; added
+  `max-w-[calc(100vw-2rem)]`.
+- **Rate limiting on `POST /api/reports`**: closed the Deferred gap noted
+  since Phase 6 (only same-target dedupe existed; a reporter could still
+  spam reports against many different targets). `src/modules/moderation/
+  reports.ts` now enforces a per-reporter Redis sliding-window limit (20
+  reports/hour), mirroring the existing OTP rate-limiter pattern. A
+  deduped (`alreadyOpen: true`) report does not count against the limit.
+  `src/app/api/reports/route.ts` maps the new `rate_limited` error to
+  `429`.
+- **Egypt-specific requirements re-verified** (RTL, Arabic labels,
+  Egyptian phone validation, EGP formatting, all 27 governorates, mobile
+  responsiveness) — no regressions found; the mobile-nav work is itself
+  the direct fix for the one genuine mobile-responsiveness gap that
+  existed.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -329,20 +361,29 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
-## Tests & Results (Phase 8, all green)
+## Tests & Results (Phase 9, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (207 modules, 716 dependencies).
-- `npm test` — **242/242 unit tests passing** across 30 files. New this
-  phase: `tests/lib/api-handler.test.ts` (request-id generation/
-  propagation, start/complete/error logging, safe 500 response), plus
-  one new test in `tests/identity/otp.test.ts` asserting the OTP code is
-  never logged (6 new tests).
-- `npx playwright test` — **5/5 e2e specs passing** (all Phase 1-7
-  specs, unmodified — confirms wrapping all 51 routes with
-  `withApiHandler` introduced no behavioral regression anywhere in the
-  app).
+- `npm run boundaries` — no violations (209 modules, 722 dependencies).
+- `npm test` — **244/244 unit tests passing** across 30 files. New this
+  phase: 2 tests in `tests/moderation/moderation.test.ts` (rate-limits a
+  reporter after 20 reports against different targets; a deduped report
+  does not count against the limit).
+- `npx playwright test` — **6/6 e2e specs passing**. New this phase:
+  `e2e/mobile-nav.spec.ts` (at a 375×667 viewport: desktop nav link is
+  hidden, hamburger button is visible, opening it reveals a working
+  mobile nav, and its link navigates correctly). All 5 pre-existing specs
+  pass unmodified.
+- `npm run build` — clean, warning-free production build, same route
+  count as Phase 8 (no new routes this phase, only markup/logic changes
+  to existing pages and one existing route's status-code mapping).
+
+### Tests & Results (Phase 8, for reference)
+
+- `npm test` — 242/242 unit tests passing across 30 files
+  (`tests/lib/api-handler.test.ts` new, plus one OTP-logging test).
+- `npx playwright test` — 5/5 e2e specs passing.
 - `npm run build` — clean production build (76 routes, precisely counted
   from the build's own route table rather than eyeballed — prior phases'
   route-count figures in this file were rougher estimates; `/api/health`'s
@@ -406,11 +447,10 @@ runtime bug. Fixed by moving the fallback rate onto
   `ACTIVE` on creation. `ListingStatus.PENDING_REVIEW` exists in the
   schema for exactly this future use, unused until a pre-publish queue
   is actually built.
-- **No rate limiting on `POST /api/reports` beyond same-target dedupe** —
-  a user can still open reports against many different targets in quick
-  succession. Proportionate for this phase's launch scope; add IP/user
-  rate limiting (mirroring the existing OTP rate limiter pattern in
-  `src/modules/identity/otp.ts`) if abuse is observed in practice.
+- ~~No rate limiting on `POST /api/reports` beyond same-target dedupe~~ —
+  **resolved in Phase 9**: a per-reporter Redis sliding-window limit (20
+  reports/hour, mirroring the OTP rate limiter) now blocks spamming
+  reports against many different targets.
 - ~~No notification fires when a report is resolved or a verification
   request is decided~~ — **resolved in Phase 7**: both now fire an
   in-app `Notification`.
@@ -509,6 +549,26 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   same "build the infrastructure, never activate without real
   credentials" principle already applied to Paymob.
 
+## Technical/Architecture Decisions (Phase 9)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `SiteHeader`'s desktop and mobile navs read from one shared
+  `nav-links.ts` list rather than each hardcoding its own — the
+  drift-prone alternative (two separate link lists) was rejected up
+  front, not fixed after the fact.
+- `MobileNav`'s panel uses plain `fixed inset-x-4` positioning, not an
+  LTR/RTL-aware centered-transform scheme, because this app has no LTR
+  mode at all (`<html lang="ar" dir="rtl">` unconditionally).
+- Report rate limiting is a per-reporter Redis sliding window (mirroring
+  the OTP limiter), separate from and in addition to the existing
+  same-target dedupe check — the dedupe alone doesn't stop spam against
+  many different targets, and the rate limit alone wouldn't give a clean
+  "you already reported this" response.
+- The rate-limit counter is incremented only on a genuinely new report,
+  never on the dedupe (`alreadyOpen: true`) path — re-reporting the same
+  target isn't the abuse pattern being guarded against.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -578,12 +638,10 @@ None.
 
 ## Exact Next Action
 
-Phase 8 is committed and pushed. Per the standing execution rule (one
-phase at a time, validate, stop for approval — and the owner's explicit
-"do not start Phase 9 until Phase 8 is verified and documented"
-instruction for this phase), **this session stops here**, awaiting
-direction on what to build next. Candidates, in rough priority order
-given what's genuinely missing today:
+Phase 9 is committed and pushed. Per the standing execution rule (one
+phase at a time, validate, stop for approval), **this session stops
+here**, awaiting direction on what to build next. Candidates, in rough
+priority order given what's genuinely missing today:
 
 - **Real email/SMS notification delivery** — needs a provider decision
   (which email service, or extending `SmsProvider` beyond OTP); see
@@ -591,7 +649,7 @@ given what's genuinely missing today:
   regardless.
 - **Sentry activation** — purely an owner action now (create a project,
   set two env vars), not engineering work; see "OWNER DECISION
-  REQUIRED — Open" above.
+  REQUIRED — Open" above. Still open, unchanged since Phase 8.
 - **`withSentryConfig` + source-map upload** — needs
   `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN`, separate from the
   DSN; a follow-up once Sentry itself is activated.

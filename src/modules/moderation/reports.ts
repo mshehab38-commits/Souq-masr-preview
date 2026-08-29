@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { redis } from "@/lib/redis";
 import { recordAudit } from "@/lib/audit";
 import { adminRemoveListing } from "@/modules/catalog/service";
 import { setUserStatus } from "@/modules/identity/service";
@@ -8,6 +9,14 @@ import type { ReportReason, ReportStatus, ReportTargetType } from "@prisma/clien
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
+// Mirrors the OTP rate limiter's shape (src/modules/identity/otp.ts) — a
+// per-reporter sliding window in Redis. Generous enough not to interfere
+// with a legitimately active user, tight enough to stop the "spam reports
+// against many different targets" gap the dedupe check alone doesn't
+// cover (see docs/DECISIONS.md).
+const MAX_REPORTS_PER_WINDOW = 20;
+const REPORT_RATE_WINDOW_SECONDS = 60 * 60;
+
 export type CreateReportInput =
   | { targetType: "LISTING"; listingId: string; reason: ReportReason; details?: string }
   | { targetType: "USER"; targetUserId: string; reason: ReportReason; details?: string };
@@ -15,17 +24,25 @@ export type CreateReportInput =
 export type CreateReportResult =
   | { success: true; report: Awaited<ReturnType<typeof prisma.report.create>>; alreadyOpen: false }
   | { success: true; report: Awaited<ReturnType<typeof prisma.report.findFirst>>; alreadyOpen: true }
-  | { success: false; error: "target_not_found" | "cannot_report_self" };
+  | { success: false; error: "target_not_found" | "cannot_report_self" | "rate_limited" };
 
 // Any authenticated user. Enforces the same mutual-exclusivity the
 // database CHECK constraint enforces (fail with a clear application error
 // before ever reaching the DB), and dedupes: a second OPEN report by the
 // same reporter against the same target returns the existing one instead
-// of creating a duplicate — the primary anti-abuse measure for this phase.
+// of creating a duplicate. Also rate-limited per reporter (below) — the
+// dedupe alone doesn't stop spamming reports against many *different*
+// targets.
 export async function createReport(
   reporterId: string,
   input: CreateReportInput,
 ): Promise<CreateReportResult> {
+  const rateKey = `reports:rate:${reporterId}`;
+  const recentCount = await redis.get(rateKey);
+  if (Number(recentCount ?? 0) >= MAX_REPORTS_PER_WINDOW) {
+    return { success: false, error: "rate_limited" };
+  }
+
   if (input.targetType === "LISTING") {
     const listing = await prisma.listing.findUnique({
       where: { id: input.listingId },
@@ -47,6 +64,7 @@ export async function createReport(
         details: input.details,
       },
     });
+    await redis.multi().incr(rateKey).expire(rateKey, REPORT_RATE_WINDOW_SECONDS).exec();
     return { success: true, report, alreadyOpen: false };
   }
 
@@ -72,6 +90,7 @@ export async function createReport(
       details: input.details,
     },
   });
+  await redis.multi().incr(rateKey).expire(rateKey, REPORT_RATE_WINDOW_SECONDS).exec();
   return { success: true, report, alreadyOpen: false };
 }
 

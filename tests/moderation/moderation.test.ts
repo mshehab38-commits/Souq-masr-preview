@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
+import { redis } from "@/lib/redis";
 import { createReport, listReports, resolveReport } from "@/modules/moderation/reports";
 
 const createdUserIds: string[] = [];
 const createdCategoryIds: string[] = [];
+const rateKeysToClean: string[] = [];
 
 async function makeUser() {
   const user = await prisma.user.create({
@@ -33,12 +35,56 @@ async function cleanup() {
   await prisma.category.deleteMany({ where: { id: { in: createdCategoryIds } } });
   await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
   await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+  if (rateKeysToClean.length > 0) {
+    await redis.del(...rateKeysToClean);
+    rateKeysToClean.length = 0;
+  }
   createdUserIds.length = 0;
   createdCategoryIds.length = 0;
 }
 
 describe("createReport", () => {
   afterEach(cleanup);
+
+  it("rate-limits a reporter after 20 reports within the window, across different targets", async () => {
+    const reporter = await makeUser();
+    rateKeysToClean.push(`reports:rate:${reporter.id}`);
+    const targets = await Promise.all(Array.from({ length: 20 }, () => makeUser()));
+
+    for (const target of targets) {
+      const result = await createReport(reporter.id, {
+        targetType: "USER",
+        targetUserId: target.id,
+        reason: "OTHER",
+      });
+      expect(result.success).toBe(true);
+    }
+
+    const oneTooMany = await makeUser();
+    const blocked = await createReport(reporter.id, {
+      targetType: "USER",
+      targetUserId: oneTooMany.id,
+      reason: "OTHER",
+    });
+    expect(blocked).toEqual({ success: false, error: "rate_limited" });
+  });
+
+  it("does not count a deduped (alreadyOpen) report against the rate limit", async () => {
+    const reporter = await makeUser();
+    rateKeysToClean.push(`reports:rate:${reporter.id}`);
+    const target = await makeUser();
+
+    await createReport(reporter.id, { targetType: "USER", targetUserId: target.id, reason: "OTHER" });
+    const deduped = await createReport(reporter.id, {
+      targetType: "USER",
+      targetUserId: target.id,
+      reason: "OTHER",
+    });
+    expect(deduped).toMatchObject({ success: true, alreadyOpen: true });
+
+    const count = await redis.get(`reports:rate:${reporter.id}`);
+    expect(Number(count)).toBe(1);
+  });
 
   it("creates a report against a listing", async () => {
     const reporter = await makeUser();

@@ -481,3 +481,45 @@ source-map upload) was deliberately not done this phase — it needs
 production-credentials decision from the DSN itself, and is a
 nice-to-have (readable stack traces in the dashboard), not a functional
 requirement.
+
+## `SiteHeader`'s desktop and mobile navs share one `NAV_LINKS` source of truth, never duplicate link lists
+
+A Phase 9 audit found `SiteHeader` had **zero responsive behavior** — every
+nav link, the "add listing" button, the notification bell, and the
+profile/login link were all unconditionally rendered in one row, which
+wraps or overflows badly below roughly tablet width (Egypt's marketplace
+traffic skews heavily mobile — CLAUDE.md's "mobile responsiveness"
+requirement was genuinely unmet here, not just imperfect). Rather than
+writing a second, separate list of links for a new mobile hamburger panel
+(the obvious but drift-prone shortcut — two lists of the same links
+inevitably go out of sync the next time a nav item is added or renamed),
+`src/components/layout/nav-links.ts` holds the single canonical list, and
+both `SiteHeader` (desktop, `hidden md:flex`) and the new
+`MobileNav` (mobile, rendered only inside the `md:hidden` wrapper) render
+from it. `MobileNav`'s panel is positioned with a plain
+`fixed inset-x-4 top-16` rather than a centered-transform scheme, because
+this app is RTL-only (`<html lang="ar" dir="rtl">`, no LTR mode exists
+anywhere) — a dual LTR/RTL positioning scheme would have been unused
+complexity. The panel's `<nav>` carries an explicit
+`aria-label="روابط الموقع"` specifically so the e2e test (and any future
+one) can unambiguously target the now-visible mobile link once the panel
+opens, without colliding with the still-present-but-hidden desktop link
+of the same name in the DOM.
+
+## Report rate limiting is a per-reporter sliding window, mirroring the OTP limiter, not a listing/user-pair check
+
+Phase 6 already prevented a duplicate *open* report against the exact
+same target (the dedupe check in `createReport`), but that check does
+nothing against a reporter opening reports against many *different*
+targets in quick succession — flagged as an explicit Deferred item in
+`PROJECT_STATE.md` since Phase 6. Phase 9 closed it the same way the
+identity module's OTP request limiter already works
+(`src/modules/identity/otp.ts`): a Redis counter keyed per-actor
+(`reports:rate:<reporterId>`), incremented with `INCR` +
+`EXPIRE` on each new report and checked against a fixed ceiling (20 per
+rolling hour) before any database write. Deliberately **not** incremented
+on the dedupe (`alreadyOpen: true`) path — a user re-submitting a report
+against a target they already reported isn't the abuse pattern this
+guards against, and penalizing it would make the dedupe response itself
+feel punitive. `POST /api/reports` maps the new `rate_limited` error to
+`429`, the conventional HTTP status for exactly this case.

@@ -381,9 +381,12 @@ Any authenticated user. Body is a discriminated union on `targetType`:
 of `SPAM`/`PROHIBITED_ITEM`/`FRAUD_SCAM`/`MISLEADING`/
 `OFFENSIVE_CONTENT`/`DUPLICATE`/`OTHER`. Returns `404 target_not_found`
 for a nonexistent/deleted target, `400 cannot_report_self` for a
-self-targeted user report, or `201 { report, alreadyOpen }` — `alreadyOpen:
-true` means an existing `OPEN` report by this reporter against this
-target was returned instead of creating a duplicate.
+self-targeted user report, `429 rate_limited` if this reporter has
+already filed 20 new reports in the past hour (Phase 9 — a deduped
+`alreadyOpen` report never counts toward this limit), or
+`201 { report, alreadyOpen }` — `alreadyOpen: true` means an existing
+`OPEN` report by this reporter against this target was returned instead
+of creating a duplicate.
 
 ## Admin: Users (Phase 6)
 
