@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/modules/identity/service";
 import { listOrdersForBuyer } from "@/modules/orders/service";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET() {
+export const GET = withApiHandler(async () => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -10,4 +11,4 @@ export async function GET() {
 
   const orders = await listOrdersForBuyer(user.id);
   return NextResponse.json({ orders });
-}
+});

@@ -4,6 +4,7 @@ import { requireAdmin, assertCsrf, normalizeEgyptianPhone } from "@/modules/iden
 import { grantSubscription } from "@/modules/subscriptions/service";
 import { prisma } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
 const bodySchema = z.object({
   userPhone: z.string().min(1),
@@ -15,7 +16,7 @@ const bodySchema = z.object({
 // payment gateway exists for self-serve purchase (see the Subscription
 // model's comment in prisma/schema.prisma). Intended for use after an
 // offline/manual payment arrangement with the seller.
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -57,4 +58,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json(result, { status: 201 });
-}
+});

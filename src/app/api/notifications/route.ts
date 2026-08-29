@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/modules/identity/service";
 import { listNotifications, getUnreadCount } from "@/modules/notifications/service";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET(request: Request) {
+export const GET = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -18,4 +19,4 @@ export async function GET(request: Request) {
   ]);
 
   return NextResponse.json({ ...result, unreadCount });
-}
+});

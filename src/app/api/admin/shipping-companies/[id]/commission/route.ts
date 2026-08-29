@@ -3,8 +3,9 @@ import { z } from "zod";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { getCommissionRule, setCommissionRule } from "@/modules/shipping/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export const GET = withApiHandler(async (_request: Request, context: { params: Promise<{ id: string }> }) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -13,13 +14,13 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const rule = await getCommissionRule(id);
   return NextResponse.json({ rule });
-}
+});
 
 const bodySchema = z.object({
   commissionPercent: z.number().min(0).max(100).nullable(),
 });
 
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export const PATCH = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -45,4 +46,4 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   });
 
   return NextResponse.json({ rule });
-}
+});

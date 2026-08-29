@@ -17,7 +17,7 @@ This is enforced mechanically, not by convention alone:
 `.dependency-cruiser.cjs` defines a forbidden rule that blocks any import
 of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
-into CI. As of Phase 7: 199 modules, 649 dependencies, zero violations.
+into CI. As of Phase 8: 207 modules, 716 dependencies, zero violations.
 
 Modules as of Phase 7:
 
@@ -58,8 +58,20 @@ Modules as of Phase 7:
 
 Cross-cutting concerns that don't belong to one domain live in `src/lib/`
 (`env`, `db`, `redis`, `queue-redis`, `logger`, `storage/`, `audit`,
-`request`, `cookie-names`, `client-cookies`, `csrf-headers`) and are
-importable from anywhere, including from inside modules.
+`request`, `cookie-names`, `client-cookies`, `csrf-headers`, `api-handler`
+— Phase 8) and are importable from anywhere, including from inside
+modules.
+
+## Observability (Phase 8)
+
+Every API route handler is wrapped with `withApiHandler`
+(`src/lib/api-handler.ts`): request-id generation/propagation, request
+lifecycle logging (start/complete/error), and safe error handling (a
+generic 500 to the client, full detail server-side and to Sentry).
+`@sentry/nextjs` is wired via `src/instrumentation.ts`/
+`instrumentation-client.ts`, inert until a real DSN is configured (see
+`docs/OBSERVABILITY.md` for the full architecture, the log-level policy,
+and the OWNER DECISION REQUIRED callout for Sentry activation).
 
 ## Provider Abstraction Pattern
 
@@ -199,8 +211,8 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 236 tests across 29
-  files as of Phase 7.
+  against the real dev Postgres/Redis (not mocked) — 242 tests across 30
+  files as of Phase 8.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.
 - **End-to-end** (Playwright): full golden-path flows through the real

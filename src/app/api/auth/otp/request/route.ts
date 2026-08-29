@@ -3,10 +3,11 @@ import { z } from "zod";
 import { requestOtp } from "@/modules/identity/service";
 import { getClientIp } from "@/lib/request";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
 const bodySchema = z.object({ phone: z.string().min(8).max(20) });
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
@@ -29,4 +30,4 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ ok: true, devCode: result.devCode });
-}
+});

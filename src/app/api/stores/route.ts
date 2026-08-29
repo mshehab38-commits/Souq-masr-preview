@@ -3,13 +3,14 @@ import { z } from "zod";
 import { assertCsrf, getCurrentUser } from "@/modules/identity/service";
 import { createStore } from "@/modules/store/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
 const bodySchema = z.object({
   name: z.string().trim().min(2).max(80),
   description: z.string().trim().max(2000).optional(),
 });
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -36,4 +37,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json(result, { status: 201 });
-}
+});

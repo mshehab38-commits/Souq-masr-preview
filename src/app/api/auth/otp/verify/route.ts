@@ -10,13 +10,14 @@ import {
 import { getClientIp } from "@/lib/request";
 import { recordAudit } from "@/lib/audit";
 import { env } from "@/lib/env";
+import { withApiHandler } from "@/lib/api-handler";
 
 const bodySchema = z.object({
   phone: z.string().min(8).max(20),
   code: z.string().length(6),
 });
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
@@ -57,4 +58,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json({ ok: true });
-}
+});

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { assertCsrf, getCurrentUser } from "@/modules/identity/service";
 import { createOrder } from "@/modules/orders/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
 const bodySchema = z.object({
   listingId: z.string().min(1),
@@ -21,7 +22,7 @@ const bodySchema = z.object({
   buyerNote: z.string().trim().max(500).optional(),
 });
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -48,4 +49,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json(result, { status: 201 });
-}
+});

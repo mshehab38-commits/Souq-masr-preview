@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { revokeSubscription } from "@/modules/subscriptions/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
+export const DELETE = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -26,4 +27,4 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
   });
 
   return NextResponse.json({ success: true });
-}
+});

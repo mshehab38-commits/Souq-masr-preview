@@ -425,3 +425,59 @@ a `service.ts` barrel's safety for client-side import depends on
 *everything* it statically re-exports, not just the one export a caller
 wants — any module whose barrel touches a queue/worker file is unsafe to
 import, even partially, from `src/app/` client components.
+
+## `ConsoleSmsProvider` no longer logs the OTP code — it was a live secret-in-logs risk, not just a style issue
+
+An observability audit (Phase 8) found that `ConsoleSmsProvider.sendOtp()`
+(`src/modules/identity/sms.ts`) logged the raw OTP code alongside the
+phone number, unconditionally, in every environment. Since it's the only
+`SmsProvider` implementation that exists (no real SMS gateway is wired
+yet), this meant: if this code ever ran in production before a real
+provider is configured, every login code for every user would be written
+into structured logs, retrievable by anyone with log/observability
+access. Checked whether anything actually needed this: no — every test
+and e2e spec reads the code from the API response's `devCode` field
+(`requestOtp()`, gated `NODE_ENV !== "production"`), never from logs.
+Removed `code` from the logged fields entirely; zero functional or test
+impact. See `docs/OBSERVABILITY.md` for the "what never gets logged"
+policy this now exemplifies.
+
+## Every API route is wrapped with `withApiHandler`, not just logged inline where convenient
+
+Phase 8 needed request-id propagation and consistent start/complete/error
+logging across all 51 API route handlers. Next.js's App Router offers no
+"before every request, after every request" hook for Route Handlers
+specifically (`middleware.ts` only runs *before*, in the Edge runtime, and
+can't observe the handler's eventual response or catch its exceptions;
+`instrumentation.ts`'s `onRequestError` only fires *on* error, not on
+every request). The only way to get true lifecycle logging is wrapping
+each handler, so `src/lib/api-handler.ts` exports one `withApiHandler`
+function applied uniformly, rather than duplicating ad-hoc logging calls
+inside each route (which would drift in format and easily get skipped on
+new routes). The mechanical rewrite of all 51 files was done with a
+one-off Node script using the TypeScript compiler API (not regex or
+brace-counting) specifically because several routes contain template
+literals with `${...}` interpolation inside audit-log calls (e.g.
+`` `store.branding.${kind}` ``) that would confuse a naive brace-counter
+into miscounting the function body's end — the AST-based approach is
+immune to that by construction. `/api/health` is the one deliberate
+exception (see `docs/OBSERVABILITY.md`) since uptime-monitor traffic would
+otherwise dominate the logs for no diagnostic value.
+
+## Sentry activation requires a real DSN — never invented, never a placeholder
+
+`@sentry/nextjs` was already an installed dependency with no
+initialization code. Phase 8 wired the full Next.js 15 `instrumentation.ts`/
+`instrumentation-client.ts` integration, but every `Sentry.init()` call is
+behind an explicit `if (dsn is set)` guard — not reliance on the SDK's own
+documented no-DSN no-op behavior, to remove any ambiguity about whether
+this performs network activity before the owner provides a real Sentry
+project DSN. This mirrors the same principle already applied to Paymob
+(Phase 5): technical infrastructure may be built ahead of credentials,
+but nothing may activate, or even attempt, until real ones exist.
+Wrapping `next.config.ts` with `withSentryConfig` (for build-time
+source-map upload) was deliberately not done this phase — it needs
+`SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN`, a separate
+production-credentials decision from the DSN itself, and is a
+nice-to-have (readable stack traces in the dashboard), not a functional
+requirement.

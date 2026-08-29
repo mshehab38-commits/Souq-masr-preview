@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { assertCsrf, getCurrentUser } from "@/modules/identity/service";
 import { toggleFavorite } from "@/modules/catalog/service";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+export const POST = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -14,4 +15,4 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const result = await toggleFavorite(user.id, id);
   return NextResponse.json(result);
-}
+});

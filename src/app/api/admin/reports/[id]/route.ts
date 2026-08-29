@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireModerator, requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { resolveReport } from "@/modules/moderation/service";
+import { withApiHandler } from "@/lib/api-handler";
 
 const bodySchema = z.discriminatedUnion("decision", [
   z.object({ decision: z.literal("DISMISS"), notes: z.string().trim().max(2000).optional() }),
@@ -16,7 +17,7 @@ const bodySchema = z.discriminatedUnion("decision", [
 // /api/admin/users/[id]); a MODERATOR may dismiss a report or remove a
 // listing, matching the requireModerator()/requireAdmin() split documented
 // in docs/DECISIONS.md.
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export const PATCH = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
   const moderator = await requireModerator();
   if (!moderator) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -44,4 +45,4 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
 
   return NextResponse.json({ success: true });
-}
+});

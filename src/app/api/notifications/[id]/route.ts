@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser, assertCsrf } from "@/modules/identity/service";
 import { markAsRead } from "@/modules/notifications/service";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export const PATCH = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -18,4 +19,4 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
 
   return NextResponse.json({ success: true });
-}
+});

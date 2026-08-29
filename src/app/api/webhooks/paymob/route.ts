@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getPaymentProvider, isOnlinePaymentConfigured } from "@/modules/payments/service";
 import { logger } from "@/lib/logger";
+import { withApiHandler } from "@/lib/api-handler";
 
 // Inert until PAYMOB_* env vars are configured — see
 // src/modules/payments/paymob-provider.ts. Structured now so the route
 // exists and is registerable with Paymob as a callback URL the moment
 // real credentials are supplied, without needing a code change then.
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   if (!isOnlinePaymentConfigured()) {
     return NextResponse.json({ error: "not_configured" }, { status: 503 });
   }
@@ -35,4 +36,4 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ received: true });
-}
+});

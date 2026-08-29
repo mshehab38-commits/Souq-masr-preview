@@ -3,8 +3,9 @@ import { z } from "zod";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { listShippingCompanies, createShippingCompany } from "@/modules/shipping/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET() {
+export const GET = withApiHandler(async () => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -12,7 +13,7 @@ export async function GET() {
 
   const companies = await listShippingCompanies(true);
   return NextResponse.json({ companies });
-}
+});
 
 const bodySchema = z.object({
   slug: z.string().trim().min(2).max(60),
@@ -20,7 +21,7 @@ const bodySchema = z.object({
   contactInfo: z.unknown().optional(),
 });
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -44,4 +45,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json({ company }, { status: 201 });
-}
+});

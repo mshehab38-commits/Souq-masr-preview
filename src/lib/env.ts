@@ -24,6 +24,14 @@ const baseEnvSchema = z.object({
   PAYMOB_INTEGRATION_ID: z.string().min(1).optional(),
   PAYMOB_IFRAME_ID: z.string().min(1).optional(),
   PAYMOB_HMAC_SECRET: z.string().min(1).optional(),
+  // Sentry (error tracking). Entirely optional, in every environment,
+  // including production — activation is an owner decision (a real
+  // project DSN), never invented here. See docs/OBSERVABILITY.md.
+  // Server/edge DSN and the client-bundle DSN are separate values (the
+  // client one must be NEXT_PUBLIC_-prefixed to reach the browser bundle)
+  // but are typically the same DSN in practice.
+  SENTRY_DSN: z.string().url().optional(),
+  NEXT_PUBLIC_SENTRY_DSN: z.string().url().optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {

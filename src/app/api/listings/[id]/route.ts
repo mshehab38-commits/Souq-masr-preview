@@ -8,10 +8,11 @@ import {
   incrementListingViewCount,
 } from "@/modules/catalog/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function GET(_request: Request, context: RouteContext) {
+export const GET = withApiHandler(async (_request: Request, context: RouteContext) => {
   const { id } = await context.params;
   const listing = await getListingById(id);
   if (!listing) {
@@ -20,7 +21,7 @@ export async function GET(_request: Request, context: RouteContext) {
 
   await incrementListingViewCount(id);
   return NextResponse.json(listing);
-}
+});
 
 const patchSchema = z.object({
   title: z.string().trim().min(3).max(120).optional(),
@@ -32,7 +33,7 @@ const patchSchema = z.object({
   attributes: z.unknown().optional(),
 });
 
-export async function PATCH(request: Request, context: RouteContext) {
+export const PATCH = withApiHandler(async (request: Request, context: RouteContext) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -55,9 +56,9 @@ export async function PATCH(request: Request, context: RouteContext) {
 
   await recordAudit({ actorId: user.id, action: "listing.update", targetType: "Listing", targetId: id });
   return NextResponse.json({ ok: true });
-}
+});
 
-export async function DELETE(request: Request, context: RouteContext) {
+export const DELETE = withApiHandler(async (request: Request, context: RouteContext) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -74,4 +75,4 @@ export async function DELETE(request: Request, context: RouteContext) {
 
   await recordAudit({ actorId: user.id, action: "listing.delete", targetType: "Listing", targetId: id });
   return NextResponse.json({ ok: true });
-}
+});

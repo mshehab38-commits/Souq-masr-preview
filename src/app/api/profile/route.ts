@@ -3,8 +3,9 @@ import { z } from "zod";
 import { assertCsrf, getCurrentUser, formatEgyptianPhoneLocal } from "@/modules/identity/service";
 import { prisma } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET() {
+export const GET = withApiHandler(async () => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -18,11 +19,11 @@ export async function GET() {
     phoneVerifiedAt: user.phoneVerifiedAt,
     commerceVerifiedAt: user.commerceVerifiedAt,
   });
-}
+});
 
 const patchSchema = z.object({ name: z.string().trim().min(2).max(80) });
 
-export async function PATCH(request: Request) {
+export const PATCH = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -46,4 +47,4 @@ export async function PATCH(request: Request) {
   });
 
   return NextResponse.json({ ok: true });
-}
+});

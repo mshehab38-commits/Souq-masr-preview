@@ -3,8 +3,9 @@ import { z } from "zod";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { listSettlements, computeSettlementForPeriod } from "@/modules/shipping/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export const GET = withApiHandler(async (_request: Request, context: { params: Promise<{ id: string }> }) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -13,14 +14,14 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const settlements = await listSettlements(id);
   return NextResponse.json({ settlements });
-}
+});
 
 const bodySchema = z.object({
   periodStart: z.string().datetime(),
   periodEnd: z.string().datetime(),
 });
 
-export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+export const POST = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -49,4 +50,4 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   });
 
   return NextResponse.json({ settlement }, { status: 201 });
-}
+});

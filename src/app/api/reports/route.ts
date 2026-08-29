@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser, assertCsrf } from "@/modules/identity/service";
 import { createReport } from "@/modules/moderation/service";
+import { withApiHandler } from "@/lib/api-handler";
 
 const REPORT_REASONS = [
   "SPAM",
@@ -28,7 +29,7 @@ const bodySchema = z.discriminatedUnion("targetType", [
   }),
 ]);
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -48,4 +49,4 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ report: result.report, alreadyOpen: result.alreadyOpen }, { status: 201 });
-}
+});

@@ -8,8 +8,9 @@ import {
   CSRF_COOKIE_NAME,
 } from "@/modules/identity/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   if (!(await assertCsrf(request))) {
     return NextResponse.json({ error: "csrf_mismatch" }, { status: 403 });
   }
@@ -29,4 +30,4 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ ok: true });
-}
+});

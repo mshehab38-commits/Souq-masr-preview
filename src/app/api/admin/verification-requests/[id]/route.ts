@@ -2,13 +2,14 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireModerator, assertCsrf } from "@/modules/identity/service";
 import { reviewVerificationRequest } from "@/modules/identity/service";
+import { withApiHandler } from "@/lib/api-handler";
 
 const bodySchema = z.object({
   decision: z.enum(["APPROVED", "REJECTED"]),
   notes: z.string().trim().max(2000).optional(),
 });
 
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export const PATCH = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
   const moderator = await requireModerator();
   if (!moderator) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -29,4 +30,4 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
 
   return NextResponse.json({ success: true });
-}
+});

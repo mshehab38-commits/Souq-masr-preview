@@ -7,13 +7,15 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-29 (Phase 7 completion)
+Last updated: 2026-08-29 (Phase 8 completion)
 
 ## Current Status
 
-**Phase 7 (Notifications: in-app notifications for order status
-changes, new orders, resolved reports, and verification decisions) is
-COMPLETE, validated, committed, and pushed.**
+**Phase 8 (Observability: structured request-lifecycle logging with
+request-id correlation across all API routes, safe-error-logging audit
+and fix, background-job lifecycle logging, frontend/server exception
+boundaries, and the Sentry integration architecture) is COMPLETE,
+validated, committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the branch with all
 real engineering work — the GitHub `main` branch has only ever held the
@@ -52,8 +54,9 @@ tasks to be framed across disciplines).
 | 4 | Seller dashboard, stores, bulk listing management, expiry sweep | `0185481` | Done |
 | 5 | Orders, checkout, payments abstraction, shipping model, subscriptions, ledger | `6bb0f47`, `b3a9c91` | Done |
 | 6 | Trust & Safety + broader Admin: user directory/suspend/ban, listing reports & moderation queue, verification-request review | `4049a22`, `9b1315c` | Done |
-| 7 | Notifications: in-app notification bell, order/report/verification trigger wiring | this session | **Done** |
-| 8–9 | Observability/Launch, remaining roadmap items (see Deferred below) | — | Not started |
+| 7 | Notifications: in-app notification bell, order/report/verification trigger wiring | `163b5f4` | Done |
+| 8 | Observability: request-id + lifecycle logging (all API routes), safe-logging audit/fix, job lifecycle logging, error boundaries, Sentry architecture | this session | **Done** |
+| 9 | Launch / remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -235,6 +238,62 @@ reverting to two independent copies of the label map (documented in
 `docs/DECISIONS.md`) rather than routing presentation text through a
 module barrel unsafe for client-side import.
 
+## What Was Completed in Phase 8
+
+- **`src/lib/api-handler.ts`** (new): `withApiHandler` — request-id
+  generation/propagation (`x-request-id`), `api.request.start`/
+  `api.request.complete`/`api.request.error` structured logging, a
+  generic `500 { error, requestId }` on any uncaught exception (message
+  and stack stay server-side + Sentry only, never in the client
+  response), `Sentry.captureException` on error.
+- **All 51 API route handlers wrapped** with `withApiHandler` (`/api/health`
+  is the one deliberate exception — see docs/OBSERVABILITY.md), via a
+  one-off, deleted-after-use Node codemod script using the TypeScript
+  compiler API (not regex/brace-counting — several routes have template
+  literals inside audit-log calls that would confuse a naive
+  brace-counter).
+- **`/api/health`** enhanced to check Redis (`PING`) alongside Postgres
+  (`SELECT 1`), returning `{ status: "ok"|"degraded", checks }` with
+  `200`/`503`.
+- **Safe-logging fix**: `ConsoleSmsProvider` no longer logs the raw OTP
+  code (was logging it unconditionally, in every environment, entirely
+  redundantly — see "Bug Found" below).
+- **Background job lifecycle logging**: `worker.on("completed", ...)`
+  added alongside the existing `worker.on("failed", ...)` for all three
+  BullMQ workers — symmetric success/failure visibility.
+- **Frontend/server exception boundaries**: `src/app/error.tsx`,
+  `src/app/global-error.tsx` (Arabic friendly message + retry, reports to
+  Sentry client-side).
+- **Sentry architecture** (no credentials invented): `src/instrumentation.ts`
+  (+ `onRequestError` hook), `src/instrumentation-client.ts`,
+  `src/sentry.server.config.ts`, `src/sentry.edge.config.ts` — every
+  `Sentry.init()` explicitly guarded on `env.SENTRY_DSN`/
+  `NEXT_PUBLIC_SENTRY_DSN` being set. Zero network activity today. New
+  `SENTRY_DSN`/`NEXT_PUBLIC_SENTRY_DSN` optional env vars.
+- **`next.config.ts`**: extended `serverExternalPackages` (the existing
+  `bullmq` pattern) to also cover the OpenTelemetry/Prisma instrumentation
+  packages Sentry's Node SDK pulls in, eliminating harmless-but-noisy
+  webpack "Critical dependency" warnings introduced by adding Sentry.
+- **`docs/OBSERVABILITY.md`** (new): the full reference — log level
+  policy, request-id convention, `withApiHandler` usage requirement for
+  new routes, safe-logging rules, job lifecycle convention, Sentry
+  architecture, and the explicit OWNER DECISION REQUIRED callout for
+  activation.
+
+## Bug Found and Fixed in Phase 8
+
+**`ConsoleSmsProvider` was logging live OTP codes.** Confirmed via audit:
+`src/modules/identity/sms.ts`'s only `SmsProvider` implementation logged
+`{ phone, code }` on every OTP request, unconditionally, in every
+environment — meaning a production deployment that ran before a real SMS
+provider is wired would leak every login code to whatever captures
+stdout, to anyone with log access. Verified this was **entirely
+redundant**: every test and e2e spec reads the code from the API
+response's `devCode` field (gated `NODE_ENV !== "production"`), never
+from logs. Fixed by removing `code` from the logged fields — zero
+functional or test impact, confirmed by the full suite passing unchanged
+before and after.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -265,36 +324,61 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 12 migrations applied, schema at `prisma/schema.prisma`. See
-  `docs/DATABASE.md` for full entity documentation.
+- 12 migrations applied (unchanged this phase — Phase 8 is
+  application-layer only, no schema change), schema at
+  `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
+  documentation.
 
-## Tests & Results (Phase 7, all green)
+## Tests & Results (Phase 8, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (199 modules, 649 dependencies).
-- `npm test` — **236/236 unit tests passing** across 29 files. New this
-  phase: `tests/notifications/notifications.test.ts` (module),
-  `tests/notifications/triggers.test.ts` (integration — asserts a
-  `Notification` row actually appears after checkout, a transition, a
-  report resolution, and a verification decision) (15 new tests).
-- `npx playwright test` — **5/5 e2e specs passing** (all Phase 1-6
-  specs, re-verified after the client-bundle fix below — this is what
-  caught the bug in the first place).
-- `npm run build` — clean production build (53 routes, up from 50).
-- Adversarially re-validated after the client-bundle bug (see "Bug
-  Found and Fixed in Phase 7" above): full `npm run build` +
-  `npx playwright test` re-run from clean, both green.
+- `npm run boundaries` — no violations (207 modules, 716 dependencies).
+- `npm test` — **242/242 unit tests passing** across 30 files. New this
+  phase: `tests/lib/api-handler.test.ts` (request-id generation/
+  propagation, start/complete/error logging, safe 500 response), plus
+  one new test in `tests/identity/otp.test.ts` asserting the OTP code is
+  never logged (6 new tests).
+- `npx playwright test` — **5/5 e2e specs passing** (all Phase 1-7
+  specs, unmodified — confirms wrapping all 51 routes with
+  `withApiHandler` introduced no behavioral regression anywhere in the
+  app).
+- `npm run build` — clean production build (76 routes, precisely counted
+  from the build's own route table rather than eyeballed — prior phases'
+  route-count figures in this file were rougher estimates; `/api/health`'s
+  enhancement didn't add a route). Fixed a real webpack warning
+  introduced by adding Sentry (OpenTelemetry's dynamic `require()`) via
+  `serverExternalPackages` — build is warning-free, not just
+  error-free.
+- Adversarially re-validated: a first pass of the `withApiHandler`
+  generic (`Ctx = undefined`) broke Next.js's own route-handler type
+  validation for every route with no `context` parameter — caught by
+  `npm run typecheck` against `.next/types/validator.ts` before it ever
+  reached a build or test run; fixed by changing the default to
+  `Ctx = unknown` (contravariantly compatible with any context shape
+  Next.js actually passes).
 
 ## Known Issues
 
 ### Open
 
-- None. (The `OrderCancelledBy`/`ShippingRate` issues from Phase 5 and
-  the client-bundle issue from Phase 7 were all found and fixed within
-  their own development pass, never shipped.)
+- None. (The `OrderCancelledBy`/`ShippingRate` issues from Phase 5, the
+  client-bundle issue from Phase 7, the OTP-logging issue from Phase 8,
+  and the `withApiHandler` generic-default issue from Phase 8 were all
+  found and fixed within their own development pass, never shipped.)
 
 ### Deferred (not bugs — explicit scope decisions)
+
+- **Sentry is architecturally complete but inactive** — see "OWNER
+  DECISION REQUIRED" below. Every other observability feature (request
+  logging, request-id correlation, error boundaries, safe error
+  responses) works today regardless.
+- **`next.config.ts` is not wrapped with `withSentryConfig`** — that's
+  for build-time source-map upload and needs
+  `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN`, separate from the
+  DSN itself. Sentry works without it; stack traces in the dashboard
+  just won't be source-mapped to the original TypeScript until it's
+  added.
 
 - **Self-serve online subscription purchase** isn't wired — it needs a
   live payment gateway, which needs real Paymob credentials (a
@@ -402,6 +486,29 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   didn't trigger the transition themselves (both, for an admin/system
   actor) — the actor already knows about their own action.
 
+## Technical/Architecture Decisions (Phase 8)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- Every API route is wrapped with `withApiHandler` rather than logging
+  ad hoc per-route, because Next.js's App Router has no
+  "before-and-after-every-request" hook for Route Handlers specifically
+  (`middleware.ts` only runs before, in the Edge runtime;
+  `onRequestError` only fires on error) — wrapping is the only way to get
+  true start/complete/error lifecycle logging.
+- The mechanical rewrite of all 51 route files used a one-off Node script
+  built on the TypeScript compiler API, not regex/brace-counting, because
+  several routes have template-literal interpolation
+  (`` `store.branding.${kind}` ``) inside their bodies that would confuse
+  a naive brace-counter.
+- `ConsoleSmsProvider` no longer logs the OTP code — it was a live
+  secret-in-logs risk, not a style preference, and removing it cost
+  nothing functionally since the dev/test path never read it from logs.
+- Every `Sentry.init()` call is behind an explicit `if (dsn is set)`
+  guard rather than trusting the SDK's own no-DSN no-op behavior — the
+  same "build the infrastructure, never activate without real
+  credentials" principle already applied to Paymob.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -439,10 +546,31 @@ all, which the owner ruled out entirely):
   (`allowPromotedListings`, `PROMOTED_LISTING_REVENUE`); no purchase flow
   yet (see Deferred above) — still not urgent.
 
-**No new OWNER DECISION REQUIRED items are open right now.** Nothing in
-Phases 5-7 required inventing a financial value; every configurable
+**No financial OWNER DECISION REQUIRED items are open.** Nothing in
+Phases 5-8 required inventing a financial value; every configurable
 field defaults to null/0/fail-open until the owner sets it via the
 admin console.
+
+## OWNER DECISION REQUIRED — Open (Phase 8)
+
+**Sentry activation.** The full integration architecture is built
+(`src/instrumentation.ts`, `src/instrumentation-client.ts`,
+`src/sentry.server.config.ts`, `src/sentry.edge.config.ts`) and every
+`Sentry.init()` call is explicitly guarded — it performs **zero network
+activity today**. To activate real error tracking/reporting, the owner
+needs to:
+
+1. Create a Sentry project (sentry.io or self-hosted) — an account/billing
+   decision, not an engineering one.
+2. Set `SENTRY_DSN` and `NEXT_PUBLIC_SENTRY_DSN` (see `.env.example`) to
+   that project's DSN — typically the same value in both.
+
+No code change is needed once those are set — every mechanism described
+in `docs/OBSERVABILITY.md` starts reporting immediately. This is not a
+blocker to anything else: every other observability feature (structured
+request logging, request-id correlation, safe error responses, job
+lifecycle logging, frontend/server error boundaries) is fully functional
+right now, independent of Sentry.
 
 ## Blockers
 
@@ -450,17 +578,26 @@ None.
 
 ## Exact Next Action
 
-Phase 7 is committed and pushed. The strongest remaining candidate,
-based on what's genuinely missing today: **Phase 8 (Observability)** —
-`@sentry/nextjs` is an installed-but-never-initialized dependency (no
-`sentry.client.config.ts`/`sentry.server.config.ts`/
-`instrumentation.ts` exist); real error tracking would need a Sentry
-DSN (an owner/production-credentials decision, same category as
-Paymob), but structured logging, a request-id/correlation convention,
-and wiring the existing `src/lib/logger.ts` more consistently across
-routes can all proceed without one. Other options: real email/SMS
-notification delivery (needs a provider decision — see
-`docs/DECISIONS.md`), or a Deferred item from Phase 5 (wiring real
-Paymob credentials once the owner has them). Read this file + `docs/*`
-fresh at the start of that session and confirm current git state
-matches this document before writing any code.
+Phase 8 is committed and pushed. Per the standing execution rule (one
+phase at a time, validate, stop for approval — and the owner's explicit
+"do not start Phase 9 until Phase 8 is verified and documented"
+instruction for this phase), **this session stops here**, awaiting
+direction on what to build next. Candidates, in rough priority order
+given what's genuinely missing today:
+
+- **Real email/SMS notification delivery** — needs a provider decision
+  (which email service, or extending `SmsProvider` beyond OTP); see
+  `docs/DECISIONS.md`. In-app notifications (Phase 7) already work fully
+  regardless.
+- **Sentry activation** — purely an owner action now (create a project,
+  set two env vars), not engineering work; see "OWNER DECISION
+  REQUIRED — Open" above.
+- **`withSentryConfig` + source-map upload** — needs
+  `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN`, separate from the
+  DSN; a follow-up once Sentry itself is activated.
+- A Deferred item from Phase 5 (wiring real Paymob credentials once the
+  owner has them) or Phase 6 (a proactive pre-publish moderation queue,
+  vs. today's reactive report-driven one).
+
+Read this file + `docs/*` fresh at the start of that session and confirm
+current git state matches this document before writing any code.

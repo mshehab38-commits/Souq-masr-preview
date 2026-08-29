@@ -3,8 +3,9 @@ import { z } from "zod";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { listRatesForCompany, upsertShippingRate } from "@/modules/shipping/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export const GET = withApiHandler(async (_request: Request, context: { params: Promise<{ id: string }> }) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -13,14 +14,14 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const rates = await listRatesForCompany(id);
   return NextResponse.json({ rates });
-}
+});
 
 const bodySchema = z.object({
   governorateId: z.string().min(1),
   flatFee: z.number().positive(),
 });
 
-export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+export const POST = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -46,4 +47,4 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   });
 
   return NextResponse.json({ rate }, { status: 200 });
-}
+});

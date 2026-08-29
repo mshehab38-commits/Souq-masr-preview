@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireModerator } from "@/modules/identity/service";
 import { listReports } from "@/modules/moderation/service";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET(request: Request) {
+export const GET = withApiHandler(async (request: Request) => {
   const moderator = await requireModerator();
   if (!moderator) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -20,4 +21,4 @@ export async function GET(request: Request) {
   });
 
   return NextResponse.json(result);
-}
+});

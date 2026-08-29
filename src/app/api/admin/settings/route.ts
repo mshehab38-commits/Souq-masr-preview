@@ -3,8 +3,9 @@ import { z } from "zod";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { getPlatformSettings, updatePlatformSettings } from "@/modules/settings/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET() {
+export const GET = withApiHandler(async () => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -12,14 +13,14 @@ export async function GET() {
 
   const settings = await getPlatformSettings();
   return NextResponse.json({ settings });
-}
+});
 
 const bodySchema = z.object({
   freeListingActiveLimit: z.number().int().min(0).nullable().optional(),
   paymentProcessingFeeBearer: z.enum(["PLATFORM", "SELLER", "BUYER"]).nullable().optional(),
 });
 
-export async function PATCH(request: Request) {
+export const PATCH = withApiHandler(async (request: Request) => {
   const admin = await requireAdmin();
   if (!admin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -43,4 +44,4 @@ export async function PATCH(request: Request) {
   });
 
   return NextResponse.json({ settings });
-}
+});

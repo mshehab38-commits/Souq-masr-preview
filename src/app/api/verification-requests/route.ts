@@ -7,6 +7,7 @@ import {
   getVerificationRequests,
 } from "@/modules/identity/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
 const bodySchema = z.object({
   type: z.enum(["INDIVIDUAL_SELLER", "BUSINESS"]),
@@ -14,15 +15,15 @@ const bodySchema = z.object({
   notes: z.string().trim().max(500).optional(),
 });
 
-export async function GET() {
+export const GET = withApiHandler(async () => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   }
   return NextResponse.json(await getVerificationRequests(user.id));
-}
+});
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -53,4 +54,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json(created, { status: 201 });
-}
+});

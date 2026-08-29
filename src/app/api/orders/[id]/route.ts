@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser, hasRole } from "@/modules/identity/service";
 import { getOrderById } from "@/modules/orders/service";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export const GET = withApiHandler(async (_request: Request, context: { params: Promise<{ id: string }> }) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -20,4 +21,4 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   }
 
   return NextResponse.json({ order });
-}
+});
