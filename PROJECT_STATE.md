@@ -16,23 +16,26 @@ pipeline for the `SavedSearch` model that had existed since Phase 3 with
 zero implementation, plus a real deploy-blocking migration-ordering bug
 found and fixed) is COMPLETE, validated, committed, and pushed.**
 
-Branch: `claude/souq-masr-production-plan-g38qwv` (the branch with all
-real engineering work — the GitHub `main` branch has only ever held the
-original prototype upload and is not where this project lives).
+Branch: `claude/souq-masr-production-plan-g38qwv` (the working
+development branch, where every session's commits land first — see the
+corrected note below for `main`'s actual, up-to-date state).
 Latest commit: see `git log -1`.
 
-**A note on how this branch got here**: this session began with the user
-worried the project might be lost, because GitHub's default view showed
-only `tamam-standalone.html`. That's simply `main` — every real commit
-(Phases 1 through 5) has always lived on `claude/souq-masr-production-
-plan-g38qwv` instead, and was already safely pushed. Nothing was ever
-lost; this is noted here so a future session doesn't waste time
-re-investigating the same non-issue. Confirmed via GitHub: PR #1
-(`claude/souq-masr-production-plan-g38qwv` → `main`) exists but is
-**closed, not merged** — so `main` genuinely has never received any of
-this work. All future development stays on
-`claude/souq-masr-production-plan-g38qwv` unless explicitly told
-otherwise.
+**A note on how this branch got here, corrected**: an earlier version of
+this note claimed PR #1 (`claude/souq-masr-production-plan-g38qwv` →
+`main`) was "closed, not merged." That was wrong — checking the actual
+repository (not just this file) during Phase 12 showed PR #1 **was**
+merged into `main` via a real merge commit (`adb3964`), bringing Phases
+1 through 5 (through `c57c992`) into `main` at that time. `main` simply
+hadn't been updated since. As of this session (explicit owner
+confirmation), `main` has been merged up to date with everything through
+Phase 12 (`main` commit `56d5a03`, merging in feature-branch tip
+`0f5242b` — a genuine merge, not a history rewrite; `git diff` between
+them is empty). All development still happens on
+`claude/souq-masr-production-plan-g38qwv` — that stays the working
+branch for future sessions unless told otherwise — but `main` is now a
+real mirror of it rather than stuck at the prototype, and should be kept
+that way (merge, don't rewrite) if asked to sync it again.
 
 **Permanent memory files** (read at the start of every session, per
 `CLAUDE.md`): `/CLAUDE.md` (operating rules), `PROJECT_STATE.md` (this
