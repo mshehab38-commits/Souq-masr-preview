@@ -23,6 +23,7 @@ async function makeCategory() {
 }
 
 async function cleanup() {
+  await prisma.savedSearchNotification.deleteMany({ where: { userId: { in: createdUserIds } } });
   await prisma.savedSearch.deleteMany({ where: { userId: { in: createdUserIds } } });
   await prisma.notification.deleteMany({ where: { userId: { in: createdUserIds } } });
   await prisma.listing.deleteMany({ where: { ownerId: { in: createdUserIds } } });
@@ -57,5 +58,23 @@ describe("indexListingJob", () => {
       where: { userId: buyer.id, type: "SAVED_SEARCH_MATCH" },
     });
     expect(notification).not.toBeNull();
+  });
+
+  it("a second run for the same listing (e.g. a title/description edit re-queuing indexing) does not re-notify", async () => {
+    const seller = await makeUser();
+    const buyer = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "دراجة هوائية للبيع", status: "ACTIVE" },
+    });
+    await createSavedSearch(buyer.id, "دراجات", { category: category.slug });
+
+    await indexListingJob({ listingId: listing.id });
+    await indexListingJob({ listingId: listing.id });
+
+    const count = await prisma.notification.count({
+      where: { userId: buyer.id, type: "SAVED_SEARCH_MATCH" },
+    });
+    expect(count).toBe(1);
   });
 });

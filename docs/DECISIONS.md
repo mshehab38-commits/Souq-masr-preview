@@ -681,7 +681,96 @@ match the same listing gets one notification, not several. Matching runs
 from the `search-indexing` BullMQ job, after `index()` populates
 `searchText` — not from `createListing` directly, keeping it off the
 synchronous create-listing request path the same way search indexing
-itself already is. Known, documented, unaddressed gap: editing a
+itself already is. ~~Known, documented, unaddressed gap: editing a
 listing's title/description re-triggers the same job, which can send a
 repeat notification for a listing a user was already notified about —
-no `(user, listing)` dedup table exists yet.
+no `(user, listing)` dedup table exists yet.~~ Resolved in Phase 13 —
+see the next entry.
+
+## Saved-search notification dedup is keyed by (userId, listingId), not (savedSearchId, listingId)
+
+Phase 12 shipped `notifyMatchingSavedSearches` with the gap noted above:
+re-indexing a listing (which also happens on every title/description
+edit, not just creation) re-evaluated and re-notified every matching
+user with no memory of prior notifications. Phase 13 closes this with a
+new `SavedSearchNotification` table, `@@unique([userId, listingId])`,
+claimed via an insert-and-catch-`P2002` pattern (the same one already
+used in `src/modules/store/store.ts` for slug collisions) immediately
+before each `createNotification` call. The dedup key deliberately
+excludes `savedSearchId`, and the model has **no relation to
+`SavedSearch` at all** — only to `User` and `Listing`, mirroring
+`Favorite`'s shape exactly: `deleteSavedSearch` fully removes a
+`SavedSearch` row, and if the dedup record cascaded with it, a user with
+two saved searches matching the same listing could be re-notified the
+moment either search is deleted, even though the notification promise
+("you were told about this listing") has nothing to do with which saved
+search happened to fire it. The record is permanent (no TTL), matching
+`Favorite`'s lifecycle rather than `OtpCode`'s rate-limit-style
+expiry — there's no reason a user should be re-notified about the same
+listing months later just because time passed.
+
+Rejected alternative: adding a nullable `listingId` column directly to
+`Notification` instead of a new table. `Notification` is shared across
+seven other `NotificationType`s with nothing to do with a listing/saved-
+search relationship (`NEW_ORDER`, `REPORT_RESOLVED`, etc.) — a
+dedup-specific column only `search` understands would mix that module's
+concern into `notifications`' single write path, which would need
+type-conditional logic for a field it otherwise never touches. A
+separate table keeps the dedup concept, and its constraint, owned
+entirely inside `search`.
+
+## The migration-ordering bug from Phase 12 recurred once, in the very next migration created after the fix
+
+Fixing `docs/DATABASE.md`'s documented Phase 10 migration-ordering bug
+in Phase 12 didn't prevent the identical defect from being introduced
+moments later in the same session:
+`20260829084100_add_saved_search_match_notification_type` (Phase 12's
+own `ALTER TYPE` migration, created immediately after the Phase 10 fix)
+also sorted before `add_notifications`, the migration that creates the
+type it depends on — and this went unnoticed at the time because
+`prisma migrate dev`'s shadow-database check, run while *creating* that
+migration, only validates the migrations *already on disk* before
+computing the diff; it doesn't re-verify the brand-new migration's own
+position once written. Caught in Phase 13 by running a bare, no-argument
+`npx prisma migrate dev` (which can only report "already in sync" or
+fail) as an explicit final check after any migration work, not just
+after a rename — fixed the same way as before (`git mv` + update the
+`_prisma_migrations` tracking row). See `docs/DATABASE.md` for the full
+writeup and the resulting standing rule: a bare `migrate dev` reporting
+"already in sync" is now the mandatory last step of any migration
+change, not merely a nice-to-have.
+
+## Two Playwright timeout gaps found while validating Phase 13, unrelated to its code changes
+
+Phase 13's e2e validation run hit intermittent failures on specs its
+diff never touched (`moderation-flow.spec.ts`,
+`pending-review-flow.spec.ts`, `store-management-flow.spec.ts`). Rather
+than accept "sandbox flakiness" without checking, each failure was
+root-caused before being called environmental: `pgrep -af "next dev"`
+ruled out a stray second dev server, a full `npm run build` ruled out a
+real type/code regression, and the actual failure snapshots showed the
+page still mid "جارٍ التحميل..." (loading) at the moment an assertion
+gave up — not stuck, just not finished yet. Two distinct, genuine gaps
+in `playwright.config.ts` followed from that evidence, not from
+guessing:
+
+1. `expect.timeout` had never been configured, so every
+   `toBeVisible()`-style assertion used Playwright's own 5000ms default
+   — completely independent of, and far shorter than, the suite's
+   already-raised 60s (now 90s) overall per-test `timeout`. An admin
+   page's client component fetching its own data after mount, on a cold
+   `next dev` compile of both the page route and its API route, can
+   exceed 5s even with 55+ seconds of test budget left. Fixed by adding
+   `expect: { timeout: 15_000 }`.
+2. `store-management-flow.spec.ts` still hit the (already-raised-once,
+   Phase 10) 60s overall `timeout` on a slow run. Isolating the spec
+   with a temporary 120s ceiling showed it genuinely completing in
+   48.3 seconds — slow, not hung — so the global `timeout` was raised
+   again, to `90_000`, with margin rather than tuned to the exact
+   observed number.
+
+Both are permanent `playwright.config.ts` changes, not one-off retries:
+a fixed assertion timeout and test timeout are correctness settings for
+this sandbox's real compile-cost profile, not workarounds for a flaky
+test. See the inline comments in `playwright.config.ts` for the same
+rationale kept next to the settings themselves.

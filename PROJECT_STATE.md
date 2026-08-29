@@ -7,14 +7,15 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-29 (Phase 12 completion)
+Last updated: 2026-08-29 (Phase 13 completion)
 
 ## Current Status
 
-**Phase 12 (Saved-search alerts: full CRUD + a new-listing match-and-notify
-pipeline for the `SavedSearch` model that had existed since Phase 3 with
-zero implementation, plus a real deploy-blocking migration-ordering bug
-found and fixed) is COMPLETE, validated, committed, and pushed.**
+**Phase 13 (Saved-search notification dedup: a new `SavedSearchNotification`
+table so a listing edit re-triggering search-indexing never re-notifies an
+already-notified user, plus a second occurrence of Phase 12's
+migration-ordering bug found and fixed in the same pass) is COMPLETE,
+validated, committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -61,8 +62,9 @@ tasks to be framed across disciplines).
 | 9 | Launch readiness: responsive mobile navigation, notification-dropdown overflow fix, report rate limiting | `286299a` | Done |
 | 10 | Proactive moderation: flag-for-review escalation, pending-review admin queue, listing visibility gating fix | `e36dad3` | Done |
 | 11 | SMS notification delivery: general-purpose `SmsProvider`, vendor-agnostic real gateway, SMS mirror on every notification | `d9ee7df` | Done |
-| 12 | Saved-search alerts: CRUD + match-and-notify pipeline, migration-ordering bug fix | this session | **Done** |
-| 13 | Remaining roadmap items (see Deferred below) | — | Not started |
+| 12 | Saved-search alerts: CRUD + match-and-notify pipeline, migration-ordering bug fix | `0f5242b`, `492e876` | Done |
+| 13 | Saved-search notification dedup, second migration-ordering bug fix | this session | **Done** |
+| 14 | Remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -446,6 +448,50 @@ re-running `migrate dev` to confirm a clean shadow-database replay. See
 new migration's folder name sorts after everything it depends on, not
 just after its own creation time).
 
+## What Was Completed in Phase 13
+
+- **`SavedSearchNotification` dedup table**: a permanent, one-row-per-
+  `(userId, listingId)` record with `@@unique([userId, listingId])` and
+  **no relation to `SavedSearch`** — only to `User` and `Listing`,
+  mirroring `Favorite`'s shape. Migration
+  `20260829150000_add_saved_search_notifications`.
+- **`notifyMatchingSavedSearches` now claims before it notifies**:
+  `src/modules/search/saved-searches.ts` gained a private
+  `claimSavedSearchNotification(userId, listingId)` helper (insert +
+  catch `P2002`, the same pattern already used in
+  `src/modules/store/store.ts` for slug collisions) called for every
+  matching user before `createNotification`. A listing re-indexed after
+  a title/description edit — the `search-indexing` job runs on every
+  edit, not just creation — no longer re-notifies an already-notified
+  user. Dedup survives `deleteSavedSearch`: the key is `(userId,
+  listingId)` only, never tied to which specific saved search matched.
+- No API or UI change — this is a pure internal-infrastructure fix.
+
+## Bug Found and Fixed in Phase 13
+
+**The Phase 12 migration-ordering bug recurred, undetected, in the very
+next migration created after that fix.**
+`20260829084100_add_saved_search_match_notification_type` (Phase 12's
+own `ALTER TYPE ... ADD VALUE` migration, created immediately after the
+Phase 10 ordering bug was fixed in that same session) had the identical
+defect: folder-named with a timestamp earlier than
+`20260829130000_add_notifications`, the migration that creates the type
+it depends on. It went undetected at creation time because `prisma
+migrate dev`'s shadow-database check, run while *creating* a new
+migration, only replays migrations already on disk to compute the diff —
+it doesn't re-verify the brand-new migration's own position once
+written. Caught in Phase 13 while generating this phase's own migration
+(the exact same `type "NotificationType" does not exist` shadow-database
+failure as Phase 12's bug). Fixed the same way: renamed the folder to
+`20260829141000_add_saved_search_match_notification_type` (`git mv`),
+updated the matching `_prisma_migrations.migration_name` row, then
+confirmed a clean full-history shadow-database replay with a bare,
+no-argument `npx prisma migrate dev` (reports "already in sync" or fails
+— nothing else) before proceeding. See `docs/DATABASE.md` and
+`docs/DECISIONS.md` for the full writeup and the resulting standing
+rule: that bare `migrate dev` check is now the mandatory last step of
+any migration change, not just a nice-to-have.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -476,39 +522,56 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 14 migrations applied — this phase added
-  `20260829084100_add_saved_search_match_notification_type`
-  (`NotificationType` gains `SAVED_SEARCH_MATCH`; `SavedSearch` itself
-  needed no schema change, it already existed since Phase 3). Also: the
-  Phase 10 migration was renamed from `20260829074331_...` to
-  `20260829140000_...` to fix a real ordering bug — see "Bug Found and
-  Fixed in Phase 12" above; the row count of 14 (not 15) reflects that
-  this was a rename, not an addition. Schema at `prisma/schema.prisma`.
-  See `docs/DATABASE.md` for full entity documentation and the migration-
-  ordering rule this established.
+- 15 migrations applied — this phase added
+  `20260829150000_add_saved_search_notifications` (new
+  `SavedSearchNotification` table, `@@unique([userId, listingId])`, no
+  relation to `SavedSearch`). Also: the Phase 12 migration
+  `20260829084100_add_saved_search_match_notification_type` was renamed
+  to `20260829141000_...` to fix a *second* occurrence of the same
+  ordering bug fixed in Phase 12 — see "Bug Found and Fixed in Phase 13"
+  above. Schema at `prisma/schema.prisma`. See `docs/DATABASE.md` for
+  full entity documentation and the migration-ordering rule this
+  reinforces.
 
-## Tests & Results (Phase 12, all green)
+## Tests & Results (Phase 13, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (219 modules, 774 dependencies).
-- `npm test` — **275/275 unit tests passing** across 34 files. New this
-  phase: `tests/search/saved-searches.test.ts` (11 tests — CRUD, the
-  per-user cap, the `matchesListing` predicate across all filter types,
-  and `notifyMatchingSavedSearches`'s dedup-per-user behavior), plus
-  `tests/jobs/search-indexing.test.ts` (1 test — confirms indexing runs
-  before the match check, not just that both ran).
-- `npx playwright test` — **8/8 e2e specs passing**. New this phase:
-  `e2e/saved-search-flow.spec.ts` (save a search from `/search`, confirm
-  it's listed on `/saved-searches`, delete it). All 7 pre-existing specs
-  pass unmodified. (Two runs during this phase's validation hit
-  environment-only flakiness — accumulated OTP rate-limit keys from
-  repeated debug runs, and this sandbox's variable cold-`next dev`-compile
-  timing on whichever admin route a given run happened to hit first —
-  both confirmed non-issues by clearing Redis keys and re-running clean;
-  not a code regression.)
-- `npm run build` — clean, warning-free production build, 3 new routes
-  (`/saved-searches` page + its two API routes).
+- `npm run boundaries` — no violations (219 modules, 775 dependencies —
+  +1 from the new `Prisma` import in `saved-searches.ts`).
+- `npm test` — **281/281 unit tests passing** across 34 files. New this
+  phase: 6 tests split across `tests/search/saved-searches.test.ts` (5 —
+  no re-notify on a second call, a newly-added saved search still fires
+  while an already-claimed user is skipped in the same run, a
+  pre-existing claim is honored even with no prior notification through
+  this function, deleting one of two matching saved searches doesn't
+  cause a re-notify from the other, a different listing still notifies
+  independently) and `tests/jobs/search-indexing.test.ts` (1 — a second
+  `indexListingJob` run for the same listing, the literal reported
+  scenario, does not re-notify).
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified (no
+  UI changed this phase). Two real, non-flaky fixes to
+  `playwright.config.ts` came out of chasing intermittent failures during
+  this phase's validation, both confirmed as genuine sandbox-timing gaps
+  rather than assumed-away flakiness: (1) `expect.timeout` was never set,
+  so every `expect(...).toBeVisible()` used Playwright's 5s default,
+  independent of the suite's 60s per-test timeout — an admin page's
+  client-side data fetch on a cold route compile could exceed 5s with the
+  test's overall budget nowhere near exhausted (confirmed via failure
+  snapshots showing the page still mid "جارٍ التحميل..."); raised to
+  15s. (2) `store-management-flow.spec.ts` (untouched by this phase) hit
+  the existing 60s test timeout at a measured 48.3s when re-run with more
+  headroom — genuinely slow, not hung — so the global test timeout was
+  raised again, to 90s. See `docs/DECISIONS.md`.
+- `npm run build` — clean, warning-free production build, no new routes
+  (Phase 13 added no API surface).
+
+### Tests & Results (Phase 12, for reference)
+
+- `npm test` — 275/275 unit tests passing across 34 files
+  (`tests/search/saved-searches.test.ts`, `tests/jobs/search-indexing.test.ts` new).
+- `npx playwright test` — 8/8 e2e specs passing, `e2e/saved-search-flow.spec.ts` new.
+- `npm run build` — clean, warning-free, 3 new routes.
 
 ### Tests & Results (Phase 11, for reference)
 
@@ -568,13 +631,10 @@ runtime bug. Fixed by moving the fallback rate onto
   just won't be source-mapped to the original TypeScript until it's
   added.
 
-- **Saved-search matching can send a repeat notification when a listing
-  is edited** — `notifyMatchingSavedSearches` runs from the
-  `search-indexing` job, which also re-fires whenever a listing's title/
-  description is updated, with no `(user, listing)` dedup tracking a
-  user was already notified. Proportionate for this phase's launch
-  scope (matches don't self-trigger without a new listing or a real
-  content edit); add a dedup table if it becomes a real complaint.
+- ~~Saved-search matching can send a repeat notification when a listing
+  is edited~~ — **resolved in Phase 13**: a new `SavedSearchNotification`
+  table dedupes on `(userId, listingId)`, claimed before every
+  `createNotification` call.
 
 - **Self-serve online subscription purchase** isn't wired — it needs a
   live payment gateway, which needs real Paymob credentials (a
@@ -799,6 +859,36 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   and Fixed in Phase 12" above and `docs/DATABASE.md` for the rule this
   establishes for every future migration.
 
+## Technical/Architecture Decisions (Phase 13)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `SavedSearchNotification` is keyed by `(userId, listingId)` with no
+  relation to `SavedSearch` at all, not `(savedSearchId, listingId)` —
+  the dedup guarantee is "this user was told about this listing," which
+  must survive `deleteSavedSearch` unaffected.
+- Claimed via an insert-and-catch-`P2002` pattern (already established
+  in `src/modules/store/store.ts`), not a check-then-insert — atomic
+  under concurrent overlapping jobs for the same listing.
+- A new table, not a `listingId` column bolted onto `Notification` —
+  keeps the dedup concept owned entirely inside the `search` module,
+  mirroring `Favorite`'s exact shape rather than mixing a
+  search-specific concern into `notifications`' shared, single write
+  path.
+- The Phase 12 migration-ordering bug recurred once, in the very next
+  migration created after that fix, because `prisma migrate dev`'s
+  shadow-database check at creation time only validates migrations
+  already on disk — it never re-verifies the new migration's own folder
+  position. The standing rule is now: always finish migration work with
+  a bare, no-argument `npx prisma migrate dev` and require "already in
+  sync" as the result, not just a successful named run.
+- Two Playwright config fixes (`expect.timeout` 5s→15s, global `timeout`
+  60s→90s) came out of chasing what first looked like pure flakiness
+  during this phase's own validation — both root-caused to genuine
+  sandbox timing gaps (confirmed via failure snapshots and isolated
+  longer-timeout re-runs showing real, if slow, completion), not
+  dismissed as "the sandbox is just flaky" without checking.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -868,21 +958,25 @@ None.
 
 ## Exact Next Action
 
-Phase 12 is committed and pushed. Per the standing execution rule (one
-phase at a time, validate, stop for approval), **this session stops
-here**, awaiting direction on what to build next. Candidates, in rough
-priority order given what's genuinely missing today:
+Phase 13 is committed and pushed (both branches kept in sync — see Git
+Safety in `CLAUDE.md` and this session's owner authorization to merge
+into `main`). Per the standing execution rule (one phase at a time,
+validate, stop for approval), **this session stops here**, awaiting
+direction on what to build next. Candidates, in rough priority order
+given what's genuinely missing today:
 
+- **Email notification delivery** — still not built; no provider
+  decision made, and would need a new `User.email` field (this app is
+  phone-first, no email field exists on `User` today). The
+  next-most-substantial purely-technical gap remaining: everything else
+  below is either an owner-only action (no engineering left to do) or an
+  explicit OWNER DECISION REQUIRED product call.
 - **SMS gateway activation** — purely an owner action now (pick a
   gateway, set `SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`, optionally
   a thin adapter if the chosen gateway's API doesn't already match the
   `{ to, message }` + bearer-token contract), not engineering work; see
   `docs/DECISIONS.md`. Every other notification path already works fully
   regardless (in-app always; SMS best-effort once configured).
-- **Email notification delivery** — still not built; no provider
-  decision made, and would need a new `User.email` field (this app is
-  phone-first, no email field exists on `User` today) — a genuinely
-  larger unit of work than the SMS extension was.
 - **Sentry activation** — purely an owner action (create a project, set
   two env vars); see "OWNER DECISION REQUIRED — Open" above. Still open,
   unchanged since Phase 8.
@@ -893,9 +987,6 @@ priority order given what's genuinely missing today:
   approval before going `ACTIVE`, vs. today's report-driven
   `FLAG_FOR_REVIEW`) — a genuine product/velocity trade-off, flagged as a
   possible **OWNER DECISION REQUIRED** in Known Issues; not started.
-- **Saved-search notification dedup** — a `(user, listing)` tracking
-  table to stop a listing edit from re-notifying a user already told
-  about it; a real but low-urgency gap, see Known Issues.
 - A Deferred item from Phase 5 (wiring real Paymob credentials once the
   owner has them, verifying the integration against Paymob's live
   sandbox).
