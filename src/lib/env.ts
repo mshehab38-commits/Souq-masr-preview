@@ -32,6 +32,15 @@ const baseEnvSchema = z.object({
   // but are typically the same DSN in practice.
   SENTRY_DSN: z.string().url().optional(),
   NEXT_PUBLIC_SENTRY_DSN: z.string().url().optional(),
+  // SMS gateway for general notifications (order updates, moderation
+  // decisions, etc.) beyond OTP. Entirely optional, in every environment:
+  // until both are set, ConsoleSmsProvider is used (logs only, never
+  // sends). Deliberately vendor-agnostic (a plain POST of { to, message }
+  // with a bearer token) rather than a specific gateway's exact API
+  // contract — no real SMS gateway credentials exist to verify one
+  // against. See src/modules/identity/sms.ts and docs/DECISIONS.md.
+  SMS_PROVIDER_API_URL: z.string().url().optional(),
+  SMS_PROVIDER_API_KEY: z.string().min(1).optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {

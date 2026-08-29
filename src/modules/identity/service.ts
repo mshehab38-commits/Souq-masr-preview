@@ -17,6 +17,8 @@ export {
   reviewVerificationRequest,
 } from "./verification";
 export { normalizeEgyptianPhone, formatEgyptianPhoneLocal } from "./phone";
+export { getSmsProvider } from "./sms";
+export type { SmsProvider } from "./sms";
 export { listUsers, getUserDetail, setUserStatus, setUserRole } from "./admin-users";
 export type {
   ListUsersFilter,

@@ -17,7 +17,9 @@ This is enforced mechanically, not by convention alone:
 `.dependency-cruiser.cjs` defines a forbidden rule that blocks any import
 of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
-into CI. As of Phase 10: 213 modules, 737 dependencies, zero violations.
+into CI. As of Phase 11: 213 modules, 742 dependencies, zero violations
+(the `notifications` ⇄ `identity` cycle across two `service.ts` barrels
+is allowed by this rule and verified safe — see `docs/DECISIONS.md`).
 
 Modules as of Phase 7:
 
@@ -211,8 +213,8 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 259 tests across 31
-  files as of Phase 10.
+  against the real dev Postgres/Redis (not mocked) — 263 tests across 32
+  files as of Phase 11.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.
 - **End-to-end** (Playwright): full golden-path flows through the real

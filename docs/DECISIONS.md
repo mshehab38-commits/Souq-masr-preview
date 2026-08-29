@@ -578,3 +578,60 @@ Confirmed by re-running the same spec with a longer timeout (passed,
 ~31s total) — not a real hang or regression. Playwright's global
 `timeout` is now `60_000` in `playwright.config.ts` rather than leaving
 every multi-route spec exposed to this sandbox's cold-compile variance.
+
+## The real SMS provider is a generic HTTP POST, not a specific vendor's API
+
+Phase 11 extended `SmsProvider` (OTP-only until now) to general
+notification delivery. The obvious path — implement one real vendor's
+documented API, the way `PaymobProvider` implements Paymob's — was
+rejected for SMS specifically: Paymob was already established as *the*
+gateway for this project's payments; no SMS gateway has been named or
+chosen for Egypt, and guessing one (Twilio? Vonage? a local aggregator?)
+from training knowledge risks the exact problem already flagged for
+Paymob itself — "built from documented shapes, never verified against a
+real sandbox" — but with an extra unresolved layer of *which* vendor's
+shape to guess. Instead, `HttpSmsProvider` (`src/modules/identity/sms.ts`)
+POSTs a vendor-neutral `{ to, message }` JSON body with a bearer token to
+a configurable URL (`SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`,
+optional everywhere, gated the same way Sentry's DSN is — an explicit
+presence check, not the SDK/fetch's own absence-tolerant behavior).
+Activating it for a real gateway needs, at most, a thin adapter in front
+of that gateway satisfying this one contract — a smaller, more honest
+unit of unverified-until-tested integration work than a full
+vendor-specific client would be. Picking the actual gateway (and thus
+whether an adapter is even needed) stays the owner's call, same category
+as Paymob's production credentials.
+
+## Every notification also gets an SMS attempt — no per-type allowlist
+
+`createNotification()` (`src/modules/notifications/notifications.ts`)
+sends a best-effort SMS mirror of every notification it creates,
+regardless of `NotificationType`, rather than curating a subset deemed
+"important enough." An allowlist would be an arbitrary judgment call with
+no real usage or cost data behind it yet (no SMS gateway is even
+connected), whereas "every type, for now" is simple, has an obvious
+undo (add a `notification-sms-exclude` set later, once real volume/cost
+data exists), and never risks silently under-notifying a user about
+something that turns out to matter. It costs nothing until the owner
+wires real gateway credentials. A lookup or send failure is logged and
+swallowed inside `createNotification` — it must never make the in-app
+notification (the actual source of truth) fail to save.
+
+## `notifications` and `identity` import each other's `service.ts` — a real, verified-safe cycle
+
+Wiring SMS into `createNotification` made `notifications/notifications.ts`
+import `getSmsProvider` from `identity/service.ts` — while
+`identity/verification.ts` already imports `createNotification` from
+`notifications/service.ts` (since Phase 6, for verification-decision
+notifications). This is a genuine module-level circular import, not
+theoretical. `dependency-cruiser`'s boundary rule only forbids reaching
+into a module's *internals*; it doesn't forbid cycles between two
+`service.ts` barrels, and none was introduced here. Checked empirically,
+not just assumed safe: every export on both sides of the cycle
+(`createNotification`, `getSmsProvider`) is a `function` declaration
+(hoisted before any module-body code runs), not a `const` arrow function
+— the specific case where ESM/CJS circular imports break is a `const`
+export being read before its module has finished initializing, which
+hoisted function declarations are immune to. `tests/identity`,
+`tests/moderation`, and `tests/orders` (all three touch this cycle
+transitively) pass, confirming it in practice, not just in theory.

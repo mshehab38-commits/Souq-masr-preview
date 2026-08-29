@@ -7,14 +7,14 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-29 (Phase 10 completion)
+Last updated: 2026-08-29 (Phase 11 completion)
 
 ## Current Status
 
-**Phase 10 (Proactive moderation: a reversible "flag for review" escalation
-for reported listings, a pending-review admin queue, and a real
-access-control gap fixed in `getListingById`) is COMPLETE, validated,
-committed, and pushed.**
+**Phase 11 (SMS notification delivery: `SmsProvider` extended from
+OTP-only to general-purpose, a vendor-agnostic real-gateway
+implementation, and every in-app notification getting a best-effort SMS
+mirror) is COMPLETE, validated, committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the branch with all
 real engineering work — the GitHub `main` branch has only ever held the
@@ -56,8 +56,9 @@ tasks to be framed across disciplines).
 | 7 | Notifications: in-app notification bell, order/report/verification trigger wiring | `163b5f4` | Done |
 | 8 | Observability: request-id + lifecycle logging (all API routes), safe-logging audit/fix, job lifecycle logging, error boundaries, Sentry architecture | `28bd03f` | Done |
 | 9 | Launch readiness: responsive mobile navigation, notification-dropdown overflow fix, report rate limiting | `286299a` | Done |
-| 10 | Proactive moderation: flag-for-review escalation, pending-review admin queue, listing visibility gating fix | this session | **Done** |
-| 11 | Remaining roadmap items (see Deferred below) | — | Not started |
+| 10 | Proactive moderation: flag-for-review escalation, pending-review admin queue, listing visibility gating fix | `e36dad3` | Done |
+| 11 | SMS notification delivery: general-purpose `SmsProvider`, vendor-agnostic real gateway, SMS mirror on every notification | this session | **Done** |
+| 12 | Remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -359,6 +360,38 @@ before and after.
   sandbox's cold `next dev` compile cost across several routes in one
   test, not a real hang; see `docs/DECISIONS.md`.
 
+## What Was Completed in Phase 11
+
+- **`SmsProvider` extended from OTP-only to general-purpose**
+  (`src/modules/identity/sms.ts`): the interface gained `sendMessage(phone,
+  text)` alongside the existing `sendOtp(phone, code)`. `ConsoleSmsProvider`
+  (dev/test fallback) implements both, logging only the phone — never the
+  OTP code (unchanged from Phase 8) or the message text (new).
+- **`HttpSmsProvider`** (new, real-gateway implementation): a
+  vendor-agnostic POST of `{ to, message }` with a bearer token to a
+  configurable URL, rather than one specific vendor's exact API — no real
+  SMS gateway has been chosen, so no vendor's undocumented contract could
+  be verified (same category of risk already flagged for Paymob). Selected
+  by `getSmsProvider()` only when both `SMS_PROVIDER_API_URL` and
+  `SMS_PROVIDER_API_KEY` are set; falls back to `ConsoleSmsProvider`
+  otherwise. Both new env vars are optional in every environment,
+  including production. See `docs/DECISIONS.md`.
+- **`getSmsProvider` exported from `identity/service.ts`** so other
+  modules can reach it — `notifications` now does.
+- **`createNotification()`** (`src/modules/notifications/notifications.ts`)
+  now sends a best-effort SMS mirror of every notification it creates
+  (every `NotificationType`, no curated subset — see `docs/DECISIONS.md`
+  for why), looking up the target user's phone directly. A lookup or send
+  failure is logged and swallowed — it can never make the in-app
+  notification (already saved) appear to fail.
+- **A real, verified-safe circular module dependency**: wiring this
+  created a cycle between `notifications/service.ts` and
+  `identity/service.ts` (the latter already called into `notifications`
+  since Phase 6). Confirmed safe both structurally (every export on both
+  sides is a hoisted `function` declaration, not a `const`) and
+  empirically (`tests/identity`, `tests/moderation`, `tests/orders` all
+  pass). See `docs/DECISIONS.md`.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -389,34 +422,38 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 13 migrations applied — this phase added
-  `20260829074331_add_listing_review_notification_types`
-  (`NotificationType` gains `LISTING_FLAGGED_FOR_REVIEW`/
-  `LISTING_REVIEW_DECIDED`; no other schema change — `PENDING_REVIEW`/
-  `REJECTED` on `ListingStatus` already existed since Phase 3). Schema at
-  `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
-  documentation.
+- 13 migrations applied (unchanged this phase — Phase 11 is
+  application-layer only: new optional env vars and code, no schema
+  change). Schema at `prisma/schema.prisma`. See `docs/DATABASE.md` for
+  full entity documentation.
 
-## Tests & Results (Phase 10, all green)
+## Tests & Results (Phase 11, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (213 modules, 737 dependencies).
-- `npm test` — **259/259 unit tests passing** across 31 files. New this
-  phase: `tests/catalog/pending-review.test.ts` (11 tests — flagging,
-  approve/reject, the pending-review queue query, and
-  `getListingById`'s visibility gating for owner/anonymous/moderator
-  viewers), plus 4 new tests in `tests/moderation/moderation.test.ts`
-  (`resolveReport` with `FLAG_FOR_REVIEW`; `decidePendingListing`
-  approve/reject/not-found, including audit-log and notification
-  assertions).
-- `npx playwright test` — **7/7 e2e specs passing**. New this phase:
-  `e2e/pending-review-flow.spec.ts` (flag a reported listing for review →
-  confirm it 404s for an anonymous viewer but stays visible to the admin
-  → approve it from the pending-review queue → confirm it's public again).
-  All 6 pre-existing specs pass unmodified.
-- `npm run build` — clean, warning-free production build, 3 new routes
-  (`/admin/listings/pending-review` page + its two API routes).
+- `npm run boundaries` — no violations (213 modules, 742 dependencies;
+  the new `notifications` ⇄ `identity` cycle is allowed and
+  verified-safe — see `docs/DECISIONS.md`).
+- `npm test` — **263/263 unit tests passing** across 32 files. New this
+  phase: `tests/identity/sms.test.ts` (2 tests — `sendMessage` logs
+  safely via the console fallback; `sendOtp` still never logs the raw
+  code), plus 2 new tests in `tests/notifications/notifications.test.ts`
+  (`createNotification` sends the expected SMS text; a throwing SMS send
+  never prevents the in-app notification from being saved).
+- `npx playwright test` — **7/7 e2e specs passing**, all unmodified —
+  confirms the SMS mirror (triggered transitively by every existing flow
+  that creates a notification: checkout, moderation, pending-review)
+  introduces no regression anywhere in the app.
+- `npm run build` — clean, warning-free production build, no new routes
+  (Phase 11 added no API surface).
+
+### Tests & Results (Phase 10, for reference)
+
+- `npm test` — 259/259 unit tests passing across 31 files
+  (`tests/catalog/pending-review.test.ts` new, plus 4 new
+  `moderation.test.ts` tests).
+- `npx playwright test` — 7/7 e2e specs passing, `e2e/pending-review-flow.spec.ts` new.
+- `npm run build` — clean, warning-free, 3 new routes.
 
 ### Tests & Results (Phase 8, for reference)
 
@@ -499,11 +536,15 @@ runtime bug. Fixed by moving the fallback rate onto
 - ~~No notification fires when a report is resolved or a verification
   request is decided~~ — **resolved in Phase 7**: both now fire an
   in-app `Notification`.
-- **Notifications are in-app only** — no email/SMS delivery for
-  anything except OTP. Needs a provider decision (which email service,
-  or extending `SmsProvider`) before real external delivery can be
-  built — the same category of gap as Paymob. See
-  `docs/DECISIONS.md`.
+- ~~Notifications are in-app only — no email/SMS delivery for anything
+  except OTP~~ — **resolved in Phase 11 for SMS**: every notification
+  also attempts an SMS via the now general-purpose `SmsProvider`,
+  vendor-agnostic and inert until a real gateway is configured (see
+  `docs/DECISIONS.md`). **Email is still not built** — no provider
+  decision has been made for it, and phone-first Egyptian SMS was the
+  more natural extension of infrastructure that already existed
+  (`SmsProvider`, `User.phone`) than adding an unused `User.email`
+  field would have been.
 - **No notification preferences/mute** — every trigger always fires for
   every user; there's no way for a user to opt out of a notification
   type. Not urgent at current volume; revisit if it becomes a
@@ -638,6 +679,27 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   pre-existing spec's intermittent failure was cold-compile time on this
   sandbox, not a real hang.
 
+## Technical/Architecture Decisions (Phase 11)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- The real SMS provider (`HttpSmsProvider`) is a vendor-agnostic HTTP POST
+  (`{ to, message }` + bearer token), not a specific gateway's documented
+  API like `PaymobProvider` is for Paymob — no SMS vendor has been chosen
+  for this project, and guessing one's exact contract risks the same
+  "unverified against a real sandbox" problem already flagged for Paymob,
+  with an added layer of guessing *which* vendor.
+- `createNotification()` sends an SMS mirror for every `NotificationType`,
+  not a curated allowlist — simpler, has an obvious undo once real
+  usage/cost data exists, and never risks silently skipping something
+  that turns out to matter.
+- Accepted a real circular import (`notifications/service.ts` ⇄
+  `identity/service.ts`) rather than restructuring around it, after
+  confirming it's safe both structurally (hoisted `function` exports on
+  both sides) and empirically (full test suite passes) — restructuring a
+  working, safe pattern to avoid a cycle dependency-cruiser doesn't even
+  flag would have been effort spent on a non-problem.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -707,18 +769,24 @@ None.
 
 ## Exact Next Action
 
-Phase 10 is committed and pushed. Per the standing execution rule (one
+Phase 11 is committed and pushed. Per the standing execution rule (one
 phase at a time, validate, stop for approval), **this session stops
 here**, awaiting direction on what to build next. Candidates, in rough
 priority order given what's genuinely missing today:
 
-- **Real email/SMS notification delivery** — needs a provider decision
-  (which email service, or extending `SmsProvider` beyond OTP); see
-  `docs/DECISIONS.md`. In-app notifications (Phase 7) already work fully
-  regardless.
-- **Sentry activation** — purely an owner action now (create a project,
-  set two env vars), not engineering work; see "OWNER DECISION
-  REQUIRED — Open" above. Still open, unchanged since Phase 8.
+- **SMS gateway activation** — purely an owner action now (pick a
+  gateway, set `SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`, optionally
+  a thin adapter if the chosen gateway's API doesn't already match the
+  `{ to, message }` + bearer-token contract), not engineering work; see
+  `docs/DECISIONS.md`. Every other notification path already works fully
+  regardless (in-app always; SMS best-effort once configured).
+- **Email notification delivery** — still not built; no provider
+  decision made, and would need a new `User.email` field (this app is
+  phone-first, no email field exists on `User` today) — a genuinely
+  larger unit of work than the SMS extension was.
+- **Sentry activation** — purely an owner action (create a project, set
+  two env vars); see "OWNER DECISION REQUIRED — Open" above. Still open,
+  unchanged since Phase 8.
 - **`withSentryConfig` + source-map upload** — needs
   `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN`, separate from the
   DSN; a follow-up once Sentry itself is activated.

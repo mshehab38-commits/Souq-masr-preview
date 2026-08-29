@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/db";
+import { getSmsProvider } from "@/modules/identity/service";
 import {
   createNotification,
   listNotifications,
@@ -65,6 +66,43 @@ describe("createNotification / listNotifications", () => {
 
     const result = await listNotifications(user.id);
     expect(result.items).toHaveLength(0);
+  });
+});
+
+describe("createNotification SMS mirror", () => {
+  afterEach(cleanup);
+
+  it("sends the notification text via the SMS provider to the user's phone", async () => {
+    const user = await makeUser();
+    const sendMessage = vi.spyOn(getSmsProvider(), "sendMessage").mockResolvedValueOnce();
+
+    await createNotification({
+      userId: user.id,
+      type: "ORDER_STATUS_CHANGED",
+      title: "تم شحن طلبك",
+      body: "سيصلك خلال يومين",
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith(user.phone, "تم شحن طلبك — سيصلك خلال يومين");
+    sendMessage.mockRestore();
+  });
+
+  it("still creates the in-app notification even if the SMS send throws", async () => {
+    const user = await makeUser();
+    const sendMessage = vi
+      .spyOn(getSmsProvider(), "sendMessage")
+      .mockRejectedValueOnce(new Error("gateway unreachable"));
+
+    const notification = await createNotification({
+      userId: user.id,
+      type: "LISTING_REMOVED",
+      title: "تمت إزالة إعلانك",
+    });
+
+    expect(notification.id).toBeDefined();
+    const stored = await prisma.notification.findUniqueOrThrow({ where: { id: notification.id } });
+    expect(stored.title).toBe("تمت إزالة إعلانك");
+    sendMessage.mockRestore();
   });
 });
 

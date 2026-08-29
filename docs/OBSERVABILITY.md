@@ -93,7 +93,12 @@ crash safety for the whole API surface.
   real SMS provider is wired. It no longer logs the code at all; the
   dev/test path for reading a code is the API response's `devCode` field
   (`src/modules/identity/otp.ts`, `NODE_ENV !== "production"` only),
-  never logs — every test and e2e spec already reads it that way.
+  never logs — every test and e2e spec already reads it that way. The
+  general-purpose `sendMessage`/`HttpSmsProvider` path added in Phase 11
+  follows the same discipline in the other direction: it logs the
+  *phone* and, on failure, the *status code* — never the message text
+  itself, since a notification's `title`/`body` can carry a listing
+  title or other user-entered content.
 - **Never log a full request body.** Log identifiers (user id, listing
   id, order id) and short reason codes, not the payload that produced
   them — a payload can carry names, phone numbers, addresses, or free
