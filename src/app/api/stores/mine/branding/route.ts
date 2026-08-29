@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { assertCsrf, getCurrentUser } from "@/modules/identity/service";
 import { uploadStoreBranding, type BrandingKind } from "@/modules/store/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
 const ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -35,4 +36,4 @@ export async function POST(request: Request) {
   await recordAudit({ actorId: user.id, action: `store.branding.${kind}`, targetType: "Store" });
 
   return NextResponse.json(result, { status: 200 });
-}
+});

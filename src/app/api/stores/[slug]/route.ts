@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
 import { getStoreBySlug, listStorePublicListings } from "@/modules/store/service";
+import { withApiHandler } from "@/lib/api-handler";
 
 const DEFAULT_PAGE_SIZE = 20;
 
-export async function GET(
-  request: Request,
-  context: { params: Promise<{ slug: string }> },
-) {
+export const GET = withApiHandler(async (request: Request, context: { params: Promise<{ slug: string }> }) => {
   const { slug } = await context.params;
   const store = await getStoreBySlug(slug);
   if (!store) {
@@ -18,4 +16,4 @@ export async function GET(
   const listings = await listStorePublicListings(store.ownerId, page, DEFAULT_PAGE_SIZE);
 
   return NextResponse.json({ store, listings });
-}
+});

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSearchProvider, resolveSearchFilters } from "@/modules/search/service";
+import { withApiHandler } from "@/lib/api-handler";
 
 const querySchema = z.object({
   q: z.string().trim().max(200).optional(),
@@ -13,7 +14,7 @@ const querySchema = z.object({
   page: z.coerce.number().int().min(1).max(500).optional(),
 });
 
-export async function GET(request: Request) {
+export const GET = withApiHandler(async (request: Request) => {
   const url = new URL(request.url);
   const parsed = querySchema.safeParse(Object.fromEntries(url.searchParams));
   if (!parsed.success) {
@@ -24,4 +25,4 @@ export async function GET(request: Request) {
   const result = await getSearchProvider().search(filters, { page: parsed.data.page ?? 1, limit: 20 });
 
   return NextResponse.json(result);
-}
+});

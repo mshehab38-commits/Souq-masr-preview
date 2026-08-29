@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
 import { requestOtp, verifyOtp } from "@/modules/identity/otp";
@@ -46,6 +46,28 @@ describe("requestOtp", () => {
       expect(stored).not.toBeNull();
       expect(stored?.consumedAt).toBeNull();
     } finally {
+      await cleanupPhone(normalized);
+    }
+  });
+
+  it("never logs the raw OTP code — the dev/test path is the devCode response field, not logs", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { raw, normalized } = randomTestPhone();
+    try {
+      const result = await requestOtp(raw, randomTestIp());
+      expect(result.ok).toBe(true);
+      const code = result.ok ? result.devCode : undefined;
+      expect(code).toBeTruthy();
+
+      const loggedLines = warnSpy.mock.calls.map(([line]) => line as string);
+      expect(loggedLines.some((line) => line.includes("OTP"))).toBe(true);
+      for (const line of loggedLines) {
+        const parsed = JSON.parse(line);
+        expect(parsed).not.toHaveProperty("code");
+        expect(JSON.stringify(parsed)).not.toContain(code);
+      }
+    } finally {
+      warnSpy.mockRestore();
       await cleanupPhone(normalized);
     }
   });

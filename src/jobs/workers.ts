@@ -13,6 +13,9 @@ export function createImageProcessingWorker(): Worker<ImageProcessingJobData> {
     { connection: queueRedis, concurrency: 4 },
   );
 
+  worker.on("completed", (job) => {
+    logger.info("image-processing job completed", { jobId: job.id });
+  });
   worker.on("failed", (job, error) => {
     logger.error("image-processing job failed", { jobId: job?.id, error: error.message });
   });
@@ -27,6 +30,9 @@ export function createSearchIndexWorker(): Worker<SearchIndexJobData> {
     { connection: queueRedis, concurrency: 8 },
   );
 
+  worker.on("completed", (job) => {
+    logger.info("search-indexing job completed", { jobId: job.id });
+  });
   worker.on("failed", (job, error) => {
     logger.error("search-indexing job failed", { jobId: job?.id, error: error.message });
   });
@@ -51,6 +57,9 @@ export async function createListingExpiryWorker(): Promise<Worker> {
     { connection: queueRedis, concurrency: 1 },
   );
 
+  worker.on("completed", (job) => {
+    logger.info("listing-expiry job completed", { jobId: job.id });
+  });
   worker.on("failed", (job, error) => {
     logger.error("listing-expiry job failed", { jobId: job?.id, error: error.message });
   });

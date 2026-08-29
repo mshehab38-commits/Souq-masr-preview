@@ -3,6 +3,7 @@ import { z } from "zod";
 import { assertCsrf, getCurrentUser } from "@/modules/identity/service";
 import { bulkUpdateListings } from "@/modules/catalog/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
 const MAX_BULK_IDS = 100;
 
@@ -11,7 +12,7 @@ const bodySchema = z.object({
   action: z.enum(["mark_sold", "delete", "relist"]),
 });
 
-export async function POST(request: Request) {
+export const POST = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -35,4 +36,4 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json(result, { status: 200 });
-}
+});

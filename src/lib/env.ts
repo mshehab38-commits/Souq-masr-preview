@@ -15,6 +15,32 @@ const baseEnvSchema = z.object({
   STORAGE_ACCESS_KEY_ID: z.string().min(1).optional(),
   STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),
   STORAGE_PUBLIC_CDN_URL: z.string().url().optional(),
+  // Online payment gateway (Paymob). Entirely optional: cash-on-delivery
+  // (CodPaymentProvider) is the only active PaymentProvider until real
+  // production credentials are supplied — a production-credentials
+  // decision for the owner, never invented here. See
+  // src/modules/payments/paymob-provider.ts.
+  PAYMOB_API_KEY: z.string().min(1).optional(),
+  PAYMOB_INTEGRATION_ID: z.string().min(1).optional(),
+  PAYMOB_IFRAME_ID: z.string().min(1).optional(),
+  PAYMOB_HMAC_SECRET: z.string().min(1).optional(),
+  // Sentry (error tracking). Entirely optional, in every environment,
+  // including production — activation is an owner decision (a real
+  // project DSN), never invented here. See docs/OBSERVABILITY.md.
+  // Server/edge DSN and the client-bundle DSN are separate values (the
+  // client one must be NEXT_PUBLIC_-prefixed to reach the browser bundle)
+  // but are typically the same DSN in practice.
+  SENTRY_DSN: z.string().url().optional(),
+  NEXT_PUBLIC_SENTRY_DSN: z.string().url().optional(),
+  // SMS gateway for general notifications (order updates, moderation
+  // decisions, etc.) beyond OTP. Entirely optional, in every environment:
+  // until both are set, ConsoleSmsProvider is used (logs only, never
+  // sends). Deliberately vendor-agnostic (a plain POST of { to, message }
+  // with a bearer token) rather than a specific gateway's exact API
+  // contract — no real SMS gateway credentials exist to verify one
+  // against. See src/modules/identity/sms.ts and docs/DECISIONS.md.
+  SMS_PROVIDER_API_URL: z.string().url().optional(),
+  SMS_PROVIDER_API_KEY: z.string().min(1).optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {

@@ -3,8 +3,9 @@ import { z } from "zod";
 import { assertCsrf, getCurrentUser } from "@/modules/identity/service";
 import { getStoreByOwnerId, updateStore } from "@/modules/store/service";
 import { recordAudit } from "@/lib/audit";
+import { withApiHandler } from "@/lib/api-handler";
 
-export async function GET() {
+export const GET = withApiHandler(async () => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -12,14 +13,14 @@ export async function GET() {
 
   const store = await getStoreByOwnerId(user.id);
   return NextResponse.json({ store });
-}
+});
 
 const bodySchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   description: z.string().trim().max(2000).optional(),
 });
 
-export async function PATCH(request: Request) {
+export const PATCH = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -41,4 +42,4 @@ export async function PATCH(request: Request) {
   await recordAudit({ actorId: user.id, action: "store.update", targetType: "Store" });
 
   return NextResponse.json({ success: true });
-}
+});

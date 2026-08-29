@@ -1,16 +1,20 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { getCurrentUser } from "@/modules/identity/service";
 import { getListingById } from "@/modules/catalog/service";
 import { ImageGallery } from "@/components/ui/ImageGallery";
 import { PriceTag } from "@/components/ui/PriceTag";
 import { Badge, VerifiedBadge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
 import { ListingDetailActions } from "./ListingDetailActions";
 import { ListingImageUploader } from "./ListingImageUploader";
+import { ReportButton } from "@/components/ReportButton";
 
 export default async function ListingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const [listing, user] = await Promise.all([getListingById(id), getCurrentUser()]);
+  const user = await getCurrentUser();
+  const listing = await getListingById(id, user?.id, user?.role);
 
   if (!listing) {
     notFound();
@@ -83,7 +87,19 @@ export default async function ListingDetailPage({ params }: { params: Promise<{ 
             )}
           </Card>
 
+          {!isOwner && listing.commerceEnabled && listing.status === "ACTIVE" && (
+            <Link href={`/listings/${listing.id}/checkout`}>
+              <Button fullWidth size="lg">
+                اشترِ الآن
+              </Button>
+            </Link>
+          )}
+
           <ListingDetailActions listingId={listing.id} isOwner={isOwner} isSold={listing.status === "SOLD"} />
+
+          {user && !isOwner && (
+            <ReportButton targetType="LISTING" listingId={listing.id} label="بلاغ عن الإعلان" />
+          )}
         </div>
       </div>
     </main>

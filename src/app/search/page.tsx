@@ -2,10 +2,12 @@ import Link from "next/link";
 import Image from "next/image";
 import { getSearchProvider, resolveSearchFilters } from "@/modules/search/service";
 import { getCategories, getGovernorates } from "@/modules/catalog/service";
+import { getCurrentUser } from "@/modules/identity/service";
 import { Card } from "@/components/ui/Card";
 import { PriceTag } from "@/components/ui/PriceTag";
 import { EmptyState } from "@/components/ui/States";
 import { SearchPaginationClient } from "./SearchPaginationClient";
+import { SaveSearchButton } from "./SaveSearchButton";
 
 interface SearchPageProps {
   searchParams: Promise<{
@@ -28,7 +30,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
   const page = params.page ? Number(params.page) : 1;
   const sort = params.sort === "price_asc" || params.sort === "price_desc" ? params.sort : "newest";
 
-  const [categories, governorates, filters] = await Promise.all([
+  const [categories, governorates, filters, user] = await Promise.all([
     getCategories(),
     getGovernorates(),
     resolveSearchFilters({
@@ -37,6 +39,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       governorate: params.governorate,
       sort,
     }),
+    getCurrentUser(),
   ]);
 
   const result = await getSearchProvider().search(filters, { page, limit: 20 });
@@ -117,7 +120,18 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         </button>
       </form>
 
-      <p className="mb-4 text-sm text-neutral-500">{result.totalCount} نتيجة</p>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <p className="text-sm text-neutral-500">{result.totalCount} نتيجة</p>
+        <SaveSearchButton
+          isLoggedIn={Boolean(user)}
+          query={{
+            q: params.q,
+            category: params.category,
+            governorate: params.governorate,
+            sort,
+          }}
+        />
+      </div>
 
       {result.items.length === 0 ? (
         <EmptyState title="لا توجد نتائج" description="جرّب تعديل كلمات البحث أو الفلاتر" />

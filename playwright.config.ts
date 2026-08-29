@@ -20,6 +20,13 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: "list",
+  // Default (30s) is too tight here: a spec that's first to hit several
+  // distinct routes (e.g. store-management-flow touching /dashboard/store,
+  // /store/[slug], /listings/mine, /api/listings/bulk) pays Next.js's
+  // on-demand compile cost for each one inside a single test — observed
+  // taking ~30s total on this sandbox even though every individual step is
+  // fast, causing an intermittent timeout that isn't a real hang.
+  timeout: 60_000,
   use: {
     baseURL: "http://localhost:3000",
     trace: "on-first-retry",

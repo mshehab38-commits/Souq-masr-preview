@@ -211,3 +211,477 @@ decisions that belong to the project owner, not something to invent
 while building the technical feature. If paid tiers are wanted later,
 that's a new phase with its own OWNER DECISION REQUIRED items, layered on
 top of this model rather than requiring it to change.
+
+## Ledger accounts are chosen explicitly by the caller, never inferred
+
+`recordLedgerEntry()` (`src/modules/ledger/ledger.ts`) takes `account` as
+a required parameter rather than deriving it from `type`. The
+alternative — a lookup table mapping `SUBSCRIPTION_REVENUE` →
+`PLATFORM_REVENUE`, `SELLER_PAYOUT` → `SELLER_PAYABLE`, etc. inside the
+ledger module — would be less code at each call site, but it would also
+mean a mistake in that internal mapping silently mis-tags every entry of
+that type platform-wide, discoverable only by auditing the ledger module
+itself. Requiring each caller to state `account` explicitly means a bug
+(e.g. accidentally tagging an order's product price as
+`PLATFORM_REVENUE`) is visible in the diff of the calling code during
+review, which is exactly the code that a reviewer is already looking at
+when checking "does this respect the zero-commission model."
+
+## Cash-on-delivery is the payment default, not a stopgap
+
+`CodPaymentProvider` requires no gateway integration, no merchant
+account, and produces no processing fee at all — the buyer pays the
+seller/courier directly, and Souq Masr never holds the money for that
+order. This isn't a placeholder pending "real" payments — cash-on-delivery
+is a dominant, production-viable payment method in the Egyptian
+e-commerce market. `PaymentProvider.getPaymentProvider()` defaults to it
+and it's the only method actually reachable until real Paymob credentials
+exist (see the next decision).
+
+## Paymob is implemented but only ever selected with real credentials
+
+`PaymobPaymentProvider` (`src/modules/payments/paymob-provider.ts`) is a
+full implementation of Paymob's documented Accept API v1 flow (auth
+token → order registration → payment key → iframe redirect, plus HMAC
+webhook verification) — not a stub. But `getPaymentProvider("ONLINE")`
+throws unless `PAYMOB_API_KEY`/`PAYMOB_INTEGRATION_ID`/
+`PAYMOB_IFRAME_ID`/`PAYMOB_HMAC_SECRET` are all set, and no such
+credentials have been supplied (a production-credentials decision for
+the owner, not an engineering one). This mirrors the established
+storage-provider pattern (`R2StorageProvider` only selected when real R2
+credentials exist; `LocalStorageProvider` otherwise) — the real
+implementation exists and is ready, but is never fabricated into use
+without real secrets. **Caveat**: this has never been exercised against
+Paymob's live sandbox, since no credentials exist to test with. Verify
+the exact request/response shapes and the webhook HMAC field order
+against their current documentation before relying on it in production —
+their public API has changed shape before.
+
+## Company-wide shipping fallback lives on `ShippingCompany`, not a nullable `ShippingRate` row
+
+The original design used `ShippingRate.governorateId: String?`, with a
+`null` value meaning "this company's default rate for any governorate
+without a specific one." The `@@unique([shippingCompanyId,
+governorateId])` constraint was meant to guarantee at most one such
+default row per company — but Postgres unique indexes treat every `NULL`
+as a distinct value, so that constraint could never have actually
+enforced it; a second `null`-governorate row for the same company would
+have inserted without conflict, silently breaking the "one default"
+invariant the code assumed. This was caught before it ever ran against a
+real database: Prisma's generated TypeScript types for the compound
+`where`-unique input reject a `null` `governorateId`, since Prisma itself
+knows this key can't reliably identify one row when null is involved.
+Fixed by moving the fallback to `ShippingCompany.defaultFlatFee` — a
+genuinely singular field on a genuinely singular row — and making
+`ShippingRate.governorateId` (and `flatFee`) required, so the compound
+unique key now does what it always should have (migration
+`fix_shipping_rate_default_fee_design`). General lesson: a nullable
+column inside a composite unique constraint is very rarely the right way
+to model "the default case" in Postgres — model the default as its own
+field on the parent instead.
+
+## Admin-driven configuration got a real UI now, not deferred to the Admin phase
+
+`/admin/{settings,plans,shipping,ledger}` are full, usable pages in this
+phase, not just API routes waiting for a later "Admin" phase to add a
+UI. The reasoning: every one of these values (free-listing limit,
+subscription prices, shipping rates/commission) is something the owner
+needs to actually set to run the business *today* — building the API
+without a way to call it (short of raw HTTP requests) wouldn't meet the
+spirit of "the owner must be able to configure this without a code
+change." The later, broader Admin phase (Phase 9/10 in the original
+roadmap) is about user/listing moderation and platform operations, not
+about un-blocking basic commercial configuration that can't wait that
+long.
+
+## `OrderCancelledBy` needed its own `ADMIN` value, not reuse of `SYSTEM`
+
+The order state machine (`src/modules/orders/state-machine.ts`) always
+treated `ADMIN` as a distinct actor from `SYSTEM` — an admin's override
+is a human support/dispute-resolution action; `SYSTEM` is reserved for
+fully automated transitions (e.g. a future live courier webhook marking
+`PICKED_UP`). But the `OrderCancelledBy` enum only had
+`BUYER`/`SELLER`/`SYSTEM`, so `transitions.ts`'s (already-correct)
+`cancelledBy = actor === "SYSTEM" ? "SYSTEM" : actor` logic crashed with
+a Prisma validation error the first time an admin actually cancelled an
+order — caught by a test
+(`tests/orders/transitions.test.ts`), not by manual testing, since the
+manual verification pass earlier in this phase happened not to exercise
+that specific actor. Fixed by adding `ADMIN` to the enum rather than
+mapping admin actions onto `SYSTEM`, since conflating "a person
+intervened" with "this happened automatically" would make the audit
+trail actively misleading for exactly the cases (disputes, support
+overrides) where an accurate record matters most.
+
+## `requireModerator()` and `requireAdmin()` are split, and the split lives at different layers for different pages
+
+Phase 6 needed a `MODERATOR` role (already declared in the schema since
+Phase 2, never checked anywhere) to reach the new reports queue and
+verification review, without giving it the financial/config authority
+`ADMIN` already had over settings/plans/shipping/ledger. Rather than
+inventing a permissions matrix, the shared `/admin` layout gate was
+loosened from `requireAdmin()` to the new, broader `requireModerator()`
+(`ADMIN` or `MODERATOR`), and each of the four Phase 5 financial pages
+re-checks `requireAdmin()` itself and redirects if it fails. This means
+the authorization boundary isn't in one place for every route — it's
+intentionally the looser gate at the shell plus a stricter gate on the
+pages/routes that need it, mirroring how `PATCH
+/api/admin/users/[id]` requires `requireAdmin()` even though `GET
+/api/admin/users/[id]` (same resource) only requires
+`requireModerator()`, and how `PATCH /api/admin/reports/[id]` requires
+`requireAdmin()` specifically only when the resolution action is
+`SUSPEND_USER`. The alternative — one central permission table keyed by
+route — would be more centralized but wrong for `PATCH
+/api/admin/reports/[id]`, where the required role depends on the request
+*body*, not just the route; a single gate can't express that.
+
+## Suspending/banning a user revokes sessions explicitly, even though `session.ts` already blocks them
+
+`getSessionUser()` has checked `session.user.status !== "ACTIVE"` since
+Phase 2, so a suspended/banned user's *next* request already fails
+without any Phase 6 change. `setUserStatus()` still explicitly revokes
+every active `Session` row when moving a user out of `ACTIVE`. This is
+deliberate defense-in-depth on a security-sensitive action, not
+redundant: it makes the audit trail explicit (a revoked session is
+visible in the `sessions` table, not just an implicit consequence of a
+`status` column elsewhere) and removes any dependency on that other
+check always being present/correct in the future.
+
+## `Report` targets a listing or a user, never both — enforced by a hand-added `CHECK` constraint
+
+A report needed to point at either a `Listing` or a `User`, and Prisma
+has no native way to say "exactly one of these two nullable foreign
+keys must be set, matching this enum column" — the same category of gap
+that made the original `ShippingRate` design (a nullable `governorateId`
+meant to represent "this company's default rate") unable to actually
+enforce "at most one" via `@@unique`. Rather than accept the same class
+of bug twice, the `Report` migration hand-appends a `CHECK` constraint
+(`reports_target_consistency_check`) after Prisma's generated SQL,
+enforcing the invariant at the database level regardless of which
+application code path writes the row. `createReport()` also validates
+the same rule in application code first, so a caller gets a clear
+`target_not_found`/discriminated-union type error rather than a raw
+Postgres constraint violation — the constraint is the backstop, not the
+primary interface.
+
+## Report resolution performs the side-effect action before marking the report resolved, not after
+
+`resolveReport()` with `action: "REMOVE_LISTING"` or `"SUSPEND_USER"`
+calls into `catalog`'s `adminRemoveListing()` or `identity`'s
+`setUserStatus()` *before* writing the report's own `status`/
+`reviewedById`/`reviewedAt` fields, and returns `action_failed` (leaving
+the report `OPEN`) if that call reports failure. The alternative order
+— mark resolved, then perform the action — risks a report silently
+sitting as "handled" in the queue while the listing is still live or the
+user still active, which is worse than a moderator seeing the same
+report again and retrying.
+
+## Verification approval promotes role only for a still-`INDIVIDUAL` user, never touches `ADMIN`/`MODERATOR`
+
+`reviewVerificationRequest()` sets `User.role = "BUSINESS"` on a `BUSINESS`
+verification approval, but only when the user's *current* role is still
+`INDIVIDUAL`. `role` had never been set to anything but its default by
+any code path before this phase, so this is a low-risk, additive change
+in isolation — but the explicit guard exists so that a business-type
+verification request submitted by (or on behalf of) an `ADMIN`/
+`MODERATOR` account can never accidentally downgrade their operational
+role. The check is a plain equality, not a role hierarchy comparison,
+deliberately, since this codebase has no other place that needs to
+reason about role ordering.
+
+## Notifications are in-app only — no email/SMS channel yet
+
+Phase 7 needed to tell users about events (new order, status change,
+report resolved, verification decided) that they previously only found
+out about by checking their own pages. Building this required deciding
+*how* to deliver it. Real email/SMS delivery needs an actual provider
+decision (which email service, or extending `SmsProvider` beyond OTP) —
+the same category of gap as Paymob in Phase 5: buildable, but only ever
+selected once real credentials/a provider choice exist, never
+fabricated. In-app notifications need no such credential and deliver
+real, working value today, so Phase 7 scope is in-app only; external
+channels are deferred, not attempted with a fake/console-log provider
+that would look real but do nothing.
+
+## `ORDER_STATUS_LABELS` is intentionally duplicated between the `orders` module and its app-layer file, not shared through `service.ts`
+
+While wiring the order-status-change notification, the same Arabic
+label map already existed in `src/app/orders/order-status-labels.ts`
+(client-component-facing) as a standalone object. The first attempt
+re-exported it from `@/modules/orders/service` to avoid duplicating the
+text. That broke the client bundle: `orders/service.ts` statically
+re-exports `checkout.ts`/`transitions.ts`, which import
+`catalog/service.ts` → `catalog/listings.ts` → `jobs/queues.ts` →
+`bullmq`, which needs Node's `child_process` — reachable from a client
+component (`OrderActions.tsx`) that only wanted a plain string lookup.
+Caught immediately by the Playwright suite (Next.js's dev server surfaced
+a "Module not found: Can't resolve 'child_process'" build error on
+every page using that component). Fixed by reverting to two independent
+copies of the label map — one in `state-machine.ts` (used server-side by
+the notification title), one in the app-layer file (used by client
+components) — rather than routing presentation text through a module
+barrel that isn't safe to import from the browser. The lesson generalizes:
+a `service.ts` barrel's safety for client-side import depends on
+*everything* it statically re-exports, not just the one export a caller
+wants — any module whose barrel touches a queue/worker file is unsafe to
+import, even partially, from `src/app/` client components.
+
+## `ConsoleSmsProvider` no longer logs the OTP code — it was a live secret-in-logs risk, not just a style issue
+
+An observability audit (Phase 8) found that `ConsoleSmsProvider.sendOtp()`
+(`src/modules/identity/sms.ts`) logged the raw OTP code alongside the
+phone number, unconditionally, in every environment. Since it's the only
+`SmsProvider` implementation that exists (no real SMS gateway is wired
+yet), this meant: if this code ever ran in production before a real
+provider is configured, every login code for every user would be written
+into structured logs, retrievable by anyone with log/observability
+access. Checked whether anything actually needed this: no — every test
+and e2e spec reads the code from the API response's `devCode` field
+(`requestOtp()`, gated `NODE_ENV !== "production"`), never from logs.
+Removed `code` from the logged fields entirely; zero functional or test
+impact. See `docs/OBSERVABILITY.md` for the "what never gets logged"
+policy this now exemplifies.
+
+## Every API route is wrapped with `withApiHandler`, not just logged inline where convenient
+
+Phase 8 needed request-id propagation and consistent start/complete/error
+logging across all 51 API route handlers. Next.js's App Router offers no
+"before every request, after every request" hook for Route Handlers
+specifically (`middleware.ts` only runs *before*, in the Edge runtime, and
+can't observe the handler's eventual response or catch its exceptions;
+`instrumentation.ts`'s `onRequestError` only fires *on* error, not on
+every request). The only way to get true lifecycle logging is wrapping
+each handler, so `src/lib/api-handler.ts` exports one `withApiHandler`
+function applied uniformly, rather than duplicating ad-hoc logging calls
+inside each route (which would drift in format and easily get skipped on
+new routes). The mechanical rewrite of all 51 files was done with a
+one-off Node script using the TypeScript compiler API (not regex or
+brace-counting) specifically because several routes contain template
+literals with `${...}` interpolation inside audit-log calls (e.g.
+`` `store.branding.${kind}` ``) that would confuse a naive brace-counter
+into miscounting the function body's end — the AST-based approach is
+immune to that by construction. `/api/health` is the one deliberate
+exception (see `docs/OBSERVABILITY.md`) since uptime-monitor traffic would
+otherwise dominate the logs for no diagnostic value.
+
+## Sentry activation requires a real DSN — never invented, never a placeholder
+
+`@sentry/nextjs` was already an installed dependency with no
+initialization code. Phase 8 wired the full Next.js 15 `instrumentation.ts`/
+`instrumentation-client.ts` integration, but every `Sentry.init()` call is
+behind an explicit `if (dsn is set)` guard — not reliance on the SDK's own
+documented no-DSN no-op behavior, to remove any ambiguity about whether
+this performs network activity before the owner provides a real Sentry
+project DSN. This mirrors the same principle already applied to Paymob
+(Phase 5): technical infrastructure may be built ahead of credentials,
+but nothing may activate, or even attempt, until real ones exist.
+Wrapping `next.config.ts` with `withSentryConfig` (for build-time
+source-map upload) was deliberately not done this phase — it needs
+`SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN`, a separate
+production-credentials decision from the DSN itself, and is a
+nice-to-have (readable stack traces in the dashboard), not a functional
+requirement.
+
+## `SiteHeader`'s desktop and mobile navs share one `NAV_LINKS` source of truth, never duplicate link lists
+
+A Phase 9 audit found `SiteHeader` had **zero responsive behavior** — every
+nav link, the "add listing" button, the notification bell, and the
+profile/login link were all unconditionally rendered in one row, which
+wraps or overflows badly below roughly tablet width (Egypt's marketplace
+traffic skews heavily mobile — CLAUDE.md's "mobile responsiveness"
+requirement was genuinely unmet here, not just imperfect). Rather than
+writing a second, separate list of links for a new mobile hamburger panel
+(the obvious but drift-prone shortcut — two lists of the same links
+inevitably go out of sync the next time a nav item is added or renamed),
+`src/components/layout/nav-links.ts` holds the single canonical list, and
+both `SiteHeader` (desktop, `hidden md:flex`) and the new
+`MobileNav` (mobile, rendered only inside the `md:hidden` wrapper) render
+from it. `MobileNav`'s panel is positioned with a plain
+`fixed inset-x-4 top-16` rather than a centered-transform scheme, because
+this app is RTL-only (`<html lang="ar" dir="rtl">`, no LTR mode exists
+anywhere) — a dual LTR/RTL positioning scheme would have been unused
+complexity. The panel's `<nav>` carries an explicit
+`aria-label="روابط الموقع"` specifically so the e2e test (and any future
+one) can unambiguously target the now-visible mobile link once the panel
+opens, without colliding with the still-present-but-hidden desktop link
+of the same name in the DOM.
+
+## Report rate limiting is a per-reporter sliding window, mirroring the OTP limiter, not a listing/user-pair check
+
+Phase 6 already prevented a duplicate *open* report against the exact
+same target (the dedupe check in `createReport`), but that check does
+nothing against a reporter opening reports against many *different*
+targets in quick succession — flagged as an explicit Deferred item in
+`PROJECT_STATE.md` since Phase 6. Phase 9 closed it the same way the
+identity module's OTP request limiter already works
+(`src/modules/identity/otp.ts`): a Redis counter keyed per-actor
+(`reports:rate:<reporterId>`), incremented with `INCR` +
+`EXPIRE` on each new report and checked against a fixed ceiling (20 per
+rolling hour) before any database write. Deliberately **not** incremented
+on the dedupe (`alreadyOpen: true`) path — a user re-submitting a report
+against a target they already reported isn't the abuse pattern this
+guards against, and penalizing it would make the dedupe response itself
+feel punitive. `POST /api/reports` maps the new `rate_limited` error to
+`429`, the conventional HTTP status for exactly this case.
+
+## Flagging a listing for review is a separate status transition from removing it, not a variant of the same action
+
+Phase 6 gave moderators exactly two outcomes for a reported listing:
+dismiss the report, or permanently remove the listing (`adminRemoveListing`
+— soft-deleted, `status: REMOVED`). That's a hard binary for anything
+ambiguous: a report that might be legitimate but isn't clear-cut yet has
+no middle ground between "do nothing" and "take the listing down for
+good." Phase 10 used the `PENDING_REVIEW`/`REJECTED` `ListingStatus`
+values (declared in the schema since Phase 3, never set by any code path
+until now — see `docs/DATABASE.md`) to add a genuine third option:
+`flagListingForReview()` hides the listing from public view by status
+alone, without touching `deletedAt`, so it can be restored to `ACTIVE`
+by a later `decidePendingListing()` call without the seller having to
+re-create it. This is deliberately a *new* `resolveReport()` action
+(`FLAG_FOR_REVIEW`) alongside `REMOVE_LISTING`, not a flag on it — the
+two have different reversibility and different data-model effects
+(`deletedAt` set vs. not), and keeping them as distinct actions makes
+that visible at every call site rather than hidden behind a boolean.
+`decidePendingListing` is its own standalone moderator action (off a new
+`/admin/listings/pending-review` queue) rather than living inside
+`resolveReport`, because by the time a listing is decided it may have
+accumulated multiple reports, or none tied to the specific decision — the
+queue works off the listing's own status, not off a particular report.
+
+## `getListingById` gates visibility by status and role — a real access-control gap, not just a Phase 10 nicety
+
+While wiring `PENDING_REVIEW`/`REJECTED` above, an audit of
+`getListingById` found it had **no visibility check at all**: it filtered
+only on `deletedAt: null`, meaning a `DRAFT` listing (never published) or
+a `PENDING_REVIEW`/`REJECTED` listing (as of this phase, moderated content
+awaiting or denied publication) was fetchable by anyone who knew or
+guessed its ID — including through `GET /api/listings/[id]`, which had no
+authentication check whatsoever. Fixed by gating: a non-owner sees a
+listing only if its status is `ACTIVE`/`SOLD`/`EXPIRED` (the previously
+publicly-reachable set — deliberately unchanged, to avoid any regression
+for legitimately-public closed listings), with an explicit exception for
+a `MODERATOR`/`ADMIN` viewer, who can see any non-deleted listing
+regardless of status, since moderating hidden content requires being able
+to look at it. This is why `getListingById` and the two call sites that
+matter (`GET /api/listings/[id]`, the listing detail Server Component)
+now take the viewer's id *and* role, not just their id.
+
+## Playwright's default 30s per-test timeout was raised to 60s
+
+Discovered while validating Phase 10: `e2e/store-management-flow.spec.ts`
+(pre-existing, untouched this phase) intermittently timed out at exactly
+~30s on a fresh `next dev` server, despite every individual step in it
+being fast — it's simply the first spec in a run to touch several
+distinct routes (`/dashboard/store`, `/store/[slug]`, `/listings/mine`,
+`/api/listings/bulk`) that each pay Next.js's on-demand compile cost once.
+Confirmed by re-running the same spec with a longer timeout (passed,
+~31s total) — not a real hang or regression. Playwright's global
+`timeout` is now `60_000` in `playwright.config.ts` rather than leaving
+every multi-route spec exposed to this sandbox's cold-compile variance.
+
+## The real SMS provider is a generic HTTP POST, not a specific vendor's API
+
+Phase 11 extended `SmsProvider` (OTP-only until now) to general
+notification delivery. The obvious path — implement one real vendor's
+documented API, the way `PaymobProvider` implements Paymob's — was
+rejected for SMS specifically: Paymob was already established as *the*
+gateway for this project's payments; no SMS gateway has been named or
+chosen for Egypt, and guessing one (Twilio? Vonage? a local aggregator?)
+from training knowledge risks the exact problem already flagged for
+Paymob itself — "built from documented shapes, never verified against a
+real sandbox" — but with an extra unresolved layer of *which* vendor's
+shape to guess. Instead, `HttpSmsProvider` (`src/modules/identity/sms.ts`)
+POSTs a vendor-neutral `{ to, message }` JSON body with a bearer token to
+a configurable URL (`SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`,
+optional everywhere, gated the same way Sentry's DSN is — an explicit
+presence check, not the SDK/fetch's own absence-tolerant behavior).
+Activating it for a real gateway needs, at most, a thin adapter in front
+of that gateway satisfying this one contract — a smaller, more honest
+unit of unverified-until-tested integration work than a full
+vendor-specific client would be. Picking the actual gateway (and thus
+whether an adapter is even needed) stays the owner's call, same category
+as Paymob's production credentials.
+
+## Every notification also gets an SMS attempt — no per-type allowlist
+
+`createNotification()` (`src/modules/notifications/notifications.ts`)
+sends a best-effort SMS mirror of every notification it creates,
+regardless of `NotificationType`, rather than curating a subset deemed
+"important enough." An allowlist would be an arbitrary judgment call with
+no real usage or cost data behind it yet (no SMS gateway is even
+connected), whereas "every type, for now" is simple, has an obvious
+undo (add a `notification-sms-exclude` set later, once real volume/cost
+data exists), and never risks silently under-notifying a user about
+something that turns out to matter. It costs nothing until the owner
+wires real gateway credentials. A lookup or send failure is logged and
+swallowed inside `createNotification` — it must never make the in-app
+notification (the actual source of truth) fail to save.
+
+## `notifications` and `identity` import each other's `service.ts` — a real, verified-safe cycle
+
+Wiring SMS into `createNotification` made `notifications/notifications.ts`
+import `getSmsProvider` from `identity/service.ts` — while
+`identity/verification.ts` already imports `createNotification` from
+`notifications/service.ts` (since Phase 6, for verification-decision
+notifications). This is a genuine module-level circular import, not
+theoretical. `dependency-cruiser`'s boundary rule only forbids reaching
+into a module's *internals*; it doesn't forbid cycles between two
+`service.ts` barrels, and none was introduced here. Checked empirically,
+not just assumed safe: every export on both sides of the cycle
+(`createNotification`, `getSmsProvider`) is a `function` declaration
+(hoisted before any module-body code runs), not a `const` arrow function
+— the specific case where ESM/CJS circular imports break is a `const`
+export being read before its module has finished initializing, which
+hoisted function declarations are immune to. `tests/identity`,
+`tests/moderation`, and `tests/orders` (all three touch this cycle
+transitively) pass, confirming it in practice, not just in theory.
+
+## A migration folder's timestamp must sort after everything it depends on — not just after its own creation time
+
+Building Phase 12's migration surfaced a real, previously-undetected bug:
+`npx prisma migrate dev` failed replaying the migration history into a
+fresh shadow database with `type "NotificationType" does not exist`. The
+cause: `20260829074331_add_listing_review_notification_types` (Phase 10,
+an `ALTER TYPE ... ADD VALUE`) was folder-named with an earlier timestamp
+than `20260829130000_add_notifications` (Phase 7, the `CREATE TYPE` it
+needs), even though it was *applied* to the real dev database *after* —
+`prisma migrate dev` against an already-migrated database just appends
+and runs the new migration directly, oblivious to what its folder name
+implies about ordering. `prisma migrate deploy` (what CI and any fresh
+environment actually run) has no such luxury: it replays strictly by
+lexicographic folder name, so it would have failed identically on a
+truly empty database. This had never been caught because this project's
+CI only triggers on `push: main` / `pull_request`, and neither had
+happened since the bad migration was added — the bug was real and
+deploy-blocking, just never yet exercised. Fixed by renaming the folder
+to `20260829140000_...` (`git mv`) and updating the matching
+`_prisma_migrations.migration_name` row on the dev database to keep it
+in sync, then re-running `migrate dev` to confirm a clean shadow-database
+replay. See `docs/DATABASE.md` for the operational rule this establishes
+going forward.
+
+## Saved-search matching is a field predicate, not a re-run of the live search engine
+
+`notifyMatchingSavedSearches()` (`src/modules/search/saved-searches.ts`)
+checks a new listing against every saved search's stored filters using
+plain equality/range checks on category/governorate/city (by slug — the
+same identifiers `RawSearchParams` already stores, needing no per-saved-
+search database lookup) and price, plus a normalized substring check on
+the free-text `q` field against the listing's own `searchText`. It
+deliberately does not call `PostgresSearchProvider.search()` once per
+saved search: that would be a full `word_similarity` ranked query, with
+GIN index traversal, run once for every saved search on every single new
+listing — a cost that scales with total saved searches, not with
+anything about the new listing. The tradeoff, stated plainly: this can
+miss a fuzzy/typo'd match the live search would still surface (no
+`word_similarity` fallback), but it will never falsely match something
+genuinely unrelated. One notification per matching *user*, not per
+matching *saved search*, so a user with several saved searches that all
+match the same listing gets one notification, not several. Matching runs
+from the `search-indexing` BullMQ job, after `index()` populates
+`searchText` — not from `createListing` directly, keeping it off the
+synchronous create-listing request path the same way search indexing
+itself already is. Known, documented, unaddressed gap: editing a
+listing's title/description re-triggers the same job, which can send a
+repeat notification for a listing a user was already notified about —
+no `(user, listing)` dedup table exists yet.

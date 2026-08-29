@@ -2,8 +2,7 @@
 
 PostgreSQL 16, accessed via Prisma 6. Schema source of truth:
 `prisma/schema.prisma`. This document explains the *why* behind the
-schema; for the literal field list, read the schema file directly — it's
-kept short enough (~345 lines as of Phase 4) to read in full.
+schema; for the literal field list, read the schema file directly.
 
 ## Conventions
 
@@ -70,6 +69,36 @@ apart: `npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel
 fails the build if someone edits the schema without generating a
 migration.
 
+### Migration folder names must sort in dependency order — a real bug found in Phase 12
+
+`prisma migrate deploy` (used by CI and any fresh environment) applies
+migrations strictly in **lexicographic folder-name order**, not in the
+order they were actually created or applied to any existing database. A
+migration folder timestamped earlier than one it structurally depends on
+(e.g. an `ALTER TYPE ... ADD VALUE` folder named `074331` sorting before
+the `CREATE TYPE` folder it needs, named `130000`) will fail on a truly
+fresh database — `type "X" does not exist` — even though it applied fine
+to a dev database that already had the type from an earlier session.
+This is exactly what happened between
+`20260829130000_add_notifications` and what's now
+`20260829140000_add_listing_review_notification_types` (originally
+`20260829074331_...`, renamed to fix this). It went undetected because
+neither `migrate dev`'s shadow-database check nor a real deploy had run
+against this migration set from empty until Phase 12 (this project's CI
+only triggers on `push: main` / `pull_request`, neither of which had
+happened since the bad migration was added).
+
+**When creating a migration, verify its folder name sorts after every
+migration it structurally depends on** — not just after the previous
+migration chronologically. If it doesn't, rename the folder (`git mv`)
+and update the corresponding `_prisma_migrations.migration_name` row on
+every database that already applied it under the old name, or a fresh
+`migrate deploy` will disagree with an existing dev database about
+whether it's already applied. `npx prisma migrate dev` against the real
+schema (which replays every migration into a shadow database) is the
+cheapest way to catch this — run it after any migration-folder rename,
+not just after adding a new one.
+
 ## Entities
 
 ### Identity (Phase 2)
@@ -134,9 +163,24 @@ migration.
   worker fills in `thumbnailUrl`/`mediumUrl`/`fullUrl` and flips status to
   `READY` (or `REJECTED` on invalid/corrupt input) asynchronously.
 - **`Favorite`** — unique on `(userId, listingId)`.
-- **`SavedSearch`** — `query` is a `Json` blob of the search filters as
-  the user last configured them; no notification/alert delivery yet
-  (future phase).
+- **`SavedSearch`** — `query` is a `Json` blob of `RawSearchParams` (the
+  slug-based raw params, e.g. `{ q, category, governorate, city,
+  minPrice, maxPrice, sort }` — the same shape `/api/search` accepts and
+  `resolveSearchFilters` resolves), not the already-resolved
+  `SearchFilters` with real category/governorate/city IDs — this keeps a
+  saved search stable and independent of any specific database ID.
+  Existed since Phase 3 with no implementation at all until Phase 12,
+  which added full CRUD (`src/modules/search/saved-searches.ts`, capped
+  at 20 per user) plus match-and-notify: the `search-indexing` BullMQ job
+  calls `notifyMatchingSavedSearches()` after indexing a new listing,
+  which checks every saved search's filters against the listing (a
+  cheap field-predicate match, not a live search-engine query — see
+  `docs/DECISIONS.md`) and creates one `SAVED_SEARCH_MATCH` notification
+  per matching user. A known limitation, not yet solved: editing a
+  listing's title/description re-triggers the same indexing job, which
+  can send a repeat notification to a user already notified about that
+  listing — there is no dedup table tracking "already notified
+  (user, listing)" pairs yet.
 
 ### Seller Storefronts (Phase 4)
 
@@ -186,3 +230,185 @@ must not be restricted to business/store accounts.
   Enabled via `previewFeatures = ["postgresqlExtensions"]` in the
   generator block and `extensions = [pg_trgm]` in the datasource block —
   Prisma manages the `CREATE EXTENSION` in the relevant migration.
+
+## Financial Architecture (Phase 5)
+
+The owner's approved business model: **zero commission on product
+sales**; platform revenue comes only from subscriptions, promoted
+listings, and a commission charged *to shipping companies*. The schema
+enforces the separation between seller funds and platform revenue
+structurally, not just by convention:
+
+- **`PlatformSettings`** — a singleton row (fixed id `"singleton"`,
+  lazily created on first read) for cross-cutting config that doesn't
+  need its own table: `freeListingActiveLimit` (nullable — null means no
+  cap is enforced, never an invented number) and
+  `paymentProcessingFeeBearer` (nullable enum, irrelevant until a live
+  online payment provider exists).
+- **`SubscriptionPlan`** — admin-managed, `monthlyPrice`/`yearlyPrice`
+  both nullable (a plan with neither set can't be subscribed to — it's a
+  named placeholder, not a free trial). Benefit fields
+  (`activeListingLimit`, `imageLimitPerListing`,
+  `allowPromotedListings`, `priorityPlacement`, `geographicTargeting`,
+  `storeFeatures`) are all real, owner-editable columns — never hardcoded
+  per-plan assumptions in application code.
+- **`Subscription`** — links a `User` to a `SubscriptionPlan`.
+  `grantedBy` records which admin granted it, since self-serve online
+  purchase isn't wired yet (needs a live payment gateway — see Payments
+  below). This is a legitimate interim mechanism for early-stage B2B
+  billing (an admin grants a subscription after an offline/manual
+  payment arrangement), not a placeholder hack.
+- **`ShippingCompany`** — `defaultFlatFee` is the company-wide fallback
+  rate, deliberately **not** modeled as a nullable-`governorateId` row in
+  `ShippingRate`: Postgres unique indexes treat every `NULL` as distinct,
+  so a `(shippingCompanyId, governorateId)` unique constraint could never
+  actually enforce "at most one default row per company" that way. This
+  was caught during Phase 5 development (TypeScript's compound-key
+  typing rejected a `null` `governorateId` in a `where`-unique input
+  before it became a runtime bug) and fixed by moving the fallback here.
+- **`ShippingRate`** — one row per `(shippingCompanyId, governorateId)`
+  pair, `governorateId` and `flatFee` both required. A real, negotiated
+  courier price the owner enters — never invented by engineering. A
+  company with no rate for a governorate (and no `defaultFlatFee`) is
+  simply not offered as a checkout option there.
+- **`ShippingCommissionRule`** — one row per company, nullable
+  `commissionPercent` (0% until the owner sets a real contracted rate,
+  never a guessed percentage). This is Souq Masr's cut, owed **by** the
+  shipping company — never deducted from the seller or buyer.
+- **`ShippingSettlement`** — a periodic reconciliation
+  (`computeSettlementForPeriod`) that sums a company's `COMPLETED`
+  orders' `shippingFee`/`shippingCommissionAmount` in a date range and
+  posts exactly one `LedgerEntry` for the commission. Kept fully separate
+  from seller payouts.
+- **`Order`** — one order per checkout on a single commerce-enabled
+  listing. Every money field (`productPrice`, `shippingFee`,
+  `shippingCommissionAmount`, `paymentProcessingFee`, `totalAmount`) is
+  snapshotted at checkout time from whatever's in effect then — never
+  re-read live later, so a subsequent price/rate/rule change can never
+  retroactively alter an order in flight. `status` drives the full
+  lifecycle state machine (see `docs/API.md` and
+  `src/modules/orders/state-machine.ts`); `shippingAddress` is a JSON
+  snapshot (same pattern as `Listing.attributes`) rather than a separate
+  `Address` model, since an order's delivery details must never change
+  if the buyer's saved address later does.
+- **`SellerPayout`** — `amount` always equals `Order.productPrice`
+  exactly (zero commission). For cash-on-delivery orders — the only live
+  payment method — no row is created at all: the buyer already paid the
+  seller directly, so Souq Masr never held that money and has nothing to
+  disburse or report as a liability. Rows only exist for the (currently
+  inactive) `ONLINE` payment path.
+- **`LedgerEntry`** — the append-only financial audit trail. Every
+  caller picks `account` (`PLATFORM_REVENUE` / `SELLER_PAYABLE` /
+  `BUYER_REFUNDABLE` / `SHIPPING_COMPANY_PAYABLE`) explicitly rather than
+  having it inferred — a bug at a call site (e.g. tagging product-sale
+  proceeds as `PLATFORM_REVENUE`) is visible during code review, not
+  hidden behind "smart" logic in the ledger itself. `getLedgerSummary()`
+  aggregates only `PLATFORM_REVENUE` rows by type — it is structurally
+  impossible for a product sale to appear in that total, since nothing
+  in the codebase ever writes a product-price `LedgerEntry` tagged
+  `PLATFORM_REVENUE`.
+
+### Order lifecycle enum
+
+`OrderStatus`: `PENDING → CONFIRMED → PREPARING → READY_FOR_PICKUP →
+PICKED_UP → IN_TRANSIT → OUT_FOR_DELIVERY → DELIVERED → COMPLETED`, plus
+`CANCELLED` / `FAILED` / `RETURNED` / `REFUNDED` / `DISPUTED` as
+alternate/terminal branches. `OrderCancelledBy`
+(`BUYER`/`SELLER`/`ADMIN`/`SYSTEM`) records who triggered a cancellation
+— `ADMIN` was added in a follow-up migration
+(`20260828210000_add_admin_order_cancelled_by`) after a test caught that
+the original enum only had three values while the application's actor
+model already had four; admin overrides are audit-distinct from
+automated `SYSTEM` actions, so they were never meant to be conflated.
+
+## Trust & Safety (Phase 6)
+
+- **`Report`** (migration `20260829120000_add_reports`) — a report
+  against either a `Listing` or a `User`, never both. `targetType`
+  (`LISTING`/`USER`) selects which of the two nullable FKs
+  (`listingId`/`targetUserId`) is populated; a hand-added `CHECK`
+  constraint (`reports_target_consistency_check`, appended to the
+  migration after Prisma generated the base SQL — Prisma can't express
+  "exactly one of two nullable columns" itself) enforces this at the
+  database level, not just in application code, the same class of fix as
+  the `ShippingRate` nullable-uniqueness issue documented below.
+  `reason` is a fixed `ReportReason` enum (`SPAM`/`PROHIBITED_ITEM`/
+  `FRAUD_SCAM`/`MISLEADING`/`OFFENSIVE_CONTENT`/`DUPLICATE`/`OTHER`).
+  `status` (`OPEN`/`ACTION_TAKEN`/`DISMISSED`) starts `OPEN`;
+  `reviewedById`/`reviewedAt`/`resolutionNotes` are populated once a
+  moderator resolves it. A reporter can only ever have one `OPEN` report
+  against a given target — `createReport()` returns the existing one
+  instead of creating a duplicate.
+- **`User.role`/`User.status`** — both existed since Phase 2 but were
+  never actually set by anything until this phase: `MODERATOR` (a third
+  role alongside `INDIVIDUAL`/`BUSINESS`/`ADMIN`) and `SUSPENDED`/
+  `BANNED` (alongside `ACTIVE`) are now reachable through
+  `/admin/users`. Suspending or banning a user also revokes every
+  session they currently hold (`Session.revokedAt`), on top of the
+  pre-existing check in `session.ts` that already refuses a non-`ACTIVE`
+  user's session lookup — the explicit revocation makes the cutoff
+  immediate and auditable rather than relying solely on that check.
+- **`ListingStatus.PENDING_REVIEW`/`REJECTED`** — declared since Phase 3,
+  unused until Phase 10 (see below); new listings still publish straight
+  to `ACTIVE`. `REMOVED` (previously only reachable via a seller's own
+  delete) is now also reachable via `adminRemoveListing()`, which is
+  deliberately not scoped by `ownerId` since the caller is a moderator,
+  not the owner.
+- **`VerificationRequest.reviewedBy`/`reviewedAt`** — declared since
+  Phase 2, unused until now. `reviewVerificationRequest()` sets them,
+  plus `User.commerceVerifiedAt` on approval, and — only for a request
+  of type `BUSINESS` where the user's role is still `INDIVIDUAL` — promotes
+  `role` to `BUSINESS`. It never touches an `ADMIN`/`MODERATOR` user's
+  role, and refuses to re-review an already-decided request.
+
+## Notifications (Phase 7)
+
+- **`Notification`** (migration `20260829130000_add_notifications`) — the
+  in-app row is always written; since Phase 11, `createNotification()`
+  also attempts a best-effort SMS mirror via the now general-purpose
+  `SmsProvider` (`sendMessage`, alongside its original OTP-only
+  `sendOtp`) — inert until a real gateway is configured (see
+  `docs/DECISIONS.md`). There is still no email channel. `type` is a
+  fixed `NotificationType` enum (`NEW_ORDER`/`ORDER_STATUS_CHANGED`/
+  `LISTING_REMOVED`/`LISTING_FLAGGED_FOR_REVIEW`/
+  `LISTING_REVIEW_DECIDED`/`REPORT_RESOLVED`/`VERIFICATION_REVIEWED`/
+  `SAVED_SEARCH_MATCH`).
+  `link`, if set, is always
+  an in-app path (e.g. `/orders/[id]`) — never an external URL, so
+  there's no open-redirect surface through a notification. `readAt`
+  starts `null`; `createNotification()` is the single write path, called
+  from `orders` (new order → seller; status change → whichever of
+  buyer/seller didn't trigger it, or both for an admin/system-driven
+  transition), `moderation` (report resolved → reporter; listing
+  removed → the listing's owner), and `identity` (verification decision
+  → the requesting user).
+
+## Proactive Moderation Queue (Phase 10)
+
+- **`ListingStatus.PENDING_REVIEW`/`REJECTED`** finally get a write path:
+  `flagListingForReview()` moves an `ACTIVE` listing to `PENDING_REVIEW`
+  (only from `ACTIVE` — flagging an already-sold/expired/removed listing
+  isn't a meaningful transition) as a new `resolveReport()` action
+  (`FLAG_FOR_REVIEW`, alongside the existing `REMOVE_LISTING`/
+  `SUSPEND_USER`) — a reversible, softer escalation than removal for an
+  ambiguous report. `decidePendingListing()` resolves it one way or the
+  other: `APPROVE` back to `ACTIVE`, `REJECT` to `REJECTED`. Unlike
+  `adminRemoveListing`, flagging never touches `deletedAt` — the listing
+  is hidden from public view purely through its `status`, so it can be
+  restored without the seller re-creating it.
+- **`NotificationType`** gained `LISTING_FLAGGED_FOR_REVIEW` and
+  `LISTING_REVIEW_DECIDED` (migration
+  `20260829074331_add_listing_review_notification_types`) so the seller
+  learns their listing was pulled for review, and later learns the
+  outcome, the same way they already learn about a removal.
+- **`getListingById` visibility gating** (application-layer, not schema):
+  a real gap found while building this — the function never filtered by
+  status for a non-owner viewer, so a `DRAFT` (or, after this phase,
+  `PENDING_REVIEW`/`REJECTED`) listing's ID could be fetched by anyone,
+  including through the documented `GET /api/listings/[id]` route, which
+  had no auth check at all. Fixed by gating on
+  `status IN (ACTIVE, SOLD, EXPIRED)` for any viewer who isn't the
+  listing's owner — with a further exception for a `MODERATOR`/`ADMIN`
+  viewer, who can see any non-deleted listing regardless of status, since
+  moderating `PENDING_REVIEW`/`REJECTED`/`DRAFT` content requires being
+  able to look at it.

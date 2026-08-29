@@ -9,6 +9,19 @@ export {
   SESSION_COOKIE_NAME,
   CSRF_COOKIE_NAME,
 } from "./session";
-export { hasRole } from "./rbac";
-export { submitVerificationRequest, getVerificationRequests } from "./verification";
+export { hasRole, requireAdmin, requireModerator } from "./rbac";
+export {
+  submitVerificationRequest,
+  getVerificationRequests,
+  listVerificationRequests,
+  reviewVerificationRequest,
+} from "./verification";
 export { normalizeEgyptianPhone, formatEgyptianPhoneLocal } from "./phone";
+export { getSmsProvider } from "./sms";
+export type { SmsProvider } from "./sms";
+export { listUsers, getUserDetail, setUserStatus, setUserRole } from "./admin-users";
+export type {
+  ListUsersFilter,
+  UserStatusChange,
+} from "./admin-users";
+export type { ListVerificationRequestsFilter, VerificationDecision } from "./verification";

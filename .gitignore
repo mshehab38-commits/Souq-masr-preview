@@ -18,3 +18,4 @@ blob-report/
 playwright/.cache/
 .local-storage/
 e2e/.worker-pid
+dump.rdb

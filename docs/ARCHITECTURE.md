@@ -17,24 +17,63 @@ This is enforced mechanically, not by convention alone:
 `.dependency-cruiser.cjs` defines a forbidden rule that blocks any import
 of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
-into CI. As of Phase 3: 102 modules, 259 dependencies, zero violations.
+into CI. As of Phase 12: 219 modules, 774 dependencies, zero violations
+(the `notifications` ⇄ `identity` cycle across two `service.ts` barrels
+is allowed by this rule and verified safe — see `docs/DECISIONS.md`).
 
-Modules as of Phase 4:
+Modules as of Phase 7:
 
 - `src/modules/identity/` — auth, sessions, RBAC, phone verification
-  (Phase 2).
+  (Phase 2), admin user directory/status/role management and
+  verification-request review (Phase 6).
 - `src/modules/catalog/` — listings, categories, attributes, commerce
-  eligibility, images, favorites, bulk listing actions, seller stats
-  (Phases 1, 3 & 4).
+  eligibility, images, favorites, bulk listing actions, seller stats,
+  free-listing-limit enforcement (Phases 1, 3, 4 & 5).
 - `src/modules/search/` — the `SearchProvider` abstraction and its
   Postgres implementation (Phase 3).
 - `src/modules/store/` — seller storefronts: profile, branding upload,
   public listing feed (Phase 4).
+- `src/modules/settings/` — the `PlatformSettings` singleton for
+  cross-cutting admin-configurable knobs (Phase 5).
+- `src/modules/subscriptions/` — `SubscriptionPlan` CRUD, admin-granted
+  `Subscription`s, and the active-listing-limit resolution they feed
+  (Phase 5).
+- `src/modules/shipping/` — `ShippingCompany`/`ShippingRate`/
+  `ShippingCommissionRule`/`ShippingSettlement` — modeled entirely
+  separately from seller payouts (Phase 5).
+- `src/modules/ledger/` — the single write path for every financial
+  audit-trail row, tagging each with an explicit `account` so seller
+  funds and platform revenue can never be mixed (Phase 5).
+- `src/modules/payments/` — the `PaymentProvider` abstraction:
+  `CodPaymentProvider` (live default) and `PaymobPaymentProvider` (built,
+  inert until real credentials exist) (Phase 5).
+- `src/modules/orders/` — checkout, the order state machine, and
+  role-gated transitions between its states (Phase 5).
+- `src/modules/moderation/` — user/listing `Report`s and their
+  moderator-driven resolution, composing into `catalog`'s
+  `adminRemoveListing()` and `identity`'s `setUserStatus()` (Phase 6).
+- `src/modules/notifications/` — the single write path
+  (`createNotification`) for every in-app notification, plus
+  list/unread-count/mark-read queries. Called from `orders`,
+  `moderation`, and `identity` (Phase 7). No email/SMS channel exists
+  yet — see `docs/DECISIONS.md`.
 
 Cross-cutting concerns that don't belong to one domain live in `src/lib/`
 (`env`, `db`, `redis`, `queue-redis`, `logger`, `storage/`, `audit`,
-`request`, `cookie-names`, `client-cookies`, `csrf-headers`) and are
-importable from anywhere, including from inside modules.
+`request`, `cookie-names`, `client-cookies`, `csrf-headers`, `api-handler`
+— Phase 8) and are importable from anywhere, including from inside
+modules.
+
+## Observability (Phase 8)
+
+Every API route handler is wrapped with `withApiHandler`
+(`src/lib/api-handler.ts`): request-id generation/propagation, request
+lifecycle logging (start/complete/error), and safe error handling (a
+generic 500 to the client, full detail server-side and to Sentry).
+`@sentry/nextjs` is wired via `src/instrumentation.ts`/
+`instrumentation-client.ts`, inert until a real DSN is configured (see
+`docs/OBSERVABILITY.md` for the full architecture, the log-level policy,
+and the OWNER DECISION REQUIRED callout for Sentry activation).
 
 ## Provider Abstraction Pattern
 
@@ -174,17 +213,27 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 103 tests across 17
-  files as of Phase 4.
+  against the real dev Postgres/Redis (not mocked) — 275 tests across 34
+  files as of Phase 12.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.
 - **End-to-end** (Playwright): full golden-path flows through the real
   running app — `auth-signup.spec.ts` (Phase 2),
   `listing-search-flow.spec.ts` (Phase 3: create a listing, upload an
-  image, wait for it to process to `READY`, then find it via search), and
+  image, wait for it to process to `READY`, then find it via search),
   `store-management-flow.spec.ts` (Phase 4: create a store, view it
   publicly, bulk-mark a listing sold, confirm it drops off the
-  storefront). `e2e/global-setup.ts`/`global-teardown.ts` spawn and kill a
+  storefront), `checkout-flow.spec.ts` (Phase 5: zero-commission COD
+  checkout), `moderation-flow.spec.ts` (Phase 6: a buyer reports a
+  listing, an admin resolves it by removing the listing, confirmed gone
+  from the public detail page), `mobile-nav.spec.ts` (Phase 9: the header
+  collapses into a working hamburger menu below the `md` breakpoint), and
+  `pending-review-flow.spec.ts` (Phase 10: a flagged listing disappears
+  from public view but stays visible to a moderator, then reappears once
+  approved from the pending-review queue), and `saved-search-flow.spec.ts`
+  (Phase 12: save a search from `/search`, confirm it's listed on
+  `/saved-searches`, delete it). `e2e/global-setup.ts`/`global-teardown.ts`
+  spawn and kill a
   real BullMQ worker process for the duration of the suite (via a
   detached process group + PID file, since Playwright's setup/teardown
   don't share process memory), so the image-processing pipeline is

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { getStorageProvider } from "@/lib/storage";
+import { withApiHandler } from "@/lib/api-handler";
 
 const EXTENSION_CONTENT_TYPES: Record<string, string> = {
   jpg: "image/jpeg",
@@ -26,7 +27,7 @@ function guardNonProduction(): NextResponse | null {
   return null;
 }
 
-export async function PUT(request: Request, context: { params: Promise<{ path: string[] }> }) {
+export const PUT = withApiHandler(async (request: Request, context: { params: Promise<{ path: string[] }> }) => {
   const blocked = guardNonProduction();
   if (blocked) return blocked;
 
@@ -37,9 +38,9 @@ export async function PUT(request: Request, context: { params: Promise<{ path: s
 
   await getStorageProvider().putObject(key, body, contentType);
   return NextResponse.json({ ok: true });
-}
+});
 
-export async function GET(_request: Request, context: { params: Promise<{ path: string[] }> }) {
+export const GET = withApiHandler(async (_request: Request, context: { params: Promise<{ path: string[] }> }) => {
   const blocked = guardNonProduction();
   if (blocked) return blocked;
 
@@ -54,4 +55,4 @@ export async function GET(_request: Request, context: { params: Promise<{ path: 
   } catch {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
-}
+});
