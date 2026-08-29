@@ -635,3 +635,53 @@ export being read before its module has finished initializing, which
 hoisted function declarations are immune to. `tests/identity`,
 `tests/moderation`, and `tests/orders` (all three touch this cycle
 transitively) pass, confirming it in practice, not just in theory.
+
+## A migration folder's timestamp must sort after everything it depends on — not just after its own creation time
+
+Building Phase 12's migration surfaced a real, previously-undetected bug:
+`npx prisma migrate dev` failed replaying the migration history into a
+fresh shadow database with `type "NotificationType" does not exist`. The
+cause: `20260829074331_add_listing_review_notification_types` (Phase 10,
+an `ALTER TYPE ... ADD VALUE`) was folder-named with an earlier timestamp
+than `20260829130000_add_notifications` (Phase 7, the `CREATE TYPE` it
+needs), even though it was *applied* to the real dev database *after* —
+`prisma migrate dev` against an already-migrated database just appends
+and runs the new migration directly, oblivious to what its folder name
+implies about ordering. `prisma migrate deploy` (what CI and any fresh
+environment actually run) has no such luxury: it replays strictly by
+lexicographic folder name, so it would have failed identically on a
+truly empty database. This had never been caught because this project's
+CI only triggers on `push: main` / `pull_request`, and neither had
+happened since the bad migration was added — the bug was real and
+deploy-blocking, just never yet exercised. Fixed by renaming the folder
+to `20260829140000_...` (`git mv`) and updating the matching
+`_prisma_migrations.migration_name` row on the dev database to keep it
+in sync, then re-running `migrate dev` to confirm a clean shadow-database
+replay. See `docs/DATABASE.md` for the operational rule this establishes
+going forward.
+
+## Saved-search matching is a field predicate, not a re-run of the live search engine
+
+`notifyMatchingSavedSearches()` (`src/modules/search/saved-searches.ts`)
+checks a new listing against every saved search's stored filters using
+plain equality/range checks on category/governorate/city (by slug — the
+same identifiers `RawSearchParams` already stores, needing no per-saved-
+search database lookup) and price, plus a normalized substring check on
+the free-text `q` field against the listing's own `searchText`. It
+deliberately does not call `PostgresSearchProvider.search()` once per
+saved search: that would be a full `word_similarity` ranked query, with
+GIN index traversal, run once for every saved search on every single new
+listing — a cost that scales with total saved searches, not with
+anything about the new listing. The tradeoff, stated plainly: this can
+miss a fuzzy/typo'd match the live search would still surface (no
+`word_similarity` fallback), but it will never falsely match something
+genuinely unrelated. One notification per matching *user*, not per
+matching *saved search*, so a user with several saved searches that all
+match the same listing gets one notification, not several. Matching runs
+from the `search-indexing` BullMQ job, after `index()` populates
+`searchText` — not from `createListing` directly, keeping it off the
+synchronous create-listing request path the same way search indexing
+itself already is. Known, documented, unaddressed gap: editing a
+listing's title/description re-triggers the same job, which can send a
+repeat notification for a listing a user was already notified about —
+no `(user, listing)` dedup table exists yet.

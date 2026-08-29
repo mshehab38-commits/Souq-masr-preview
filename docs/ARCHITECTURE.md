@@ -17,7 +17,7 @@ This is enforced mechanically, not by convention alone:
 `.dependency-cruiser.cjs` defines a forbidden rule that blocks any import
 of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
-into CI. As of Phase 11: 213 modules, 742 dependencies, zero violations
+into CI. As of Phase 12: 219 modules, 774 dependencies, zero violations
 (the `notifications` ⇄ `identity` cycle across two `service.ts` barrels
 is allowed by this rule and verified safe — see `docs/DECISIONS.md`).
 
@@ -213,8 +213,8 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 263 tests across 32
-  files as of Phase 11.
+  against the real dev Postgres/Redis (not mocked) — 275 tests across 34
+  files as of Phase 12.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.
 - **End-to-end** (Playwright): full golden-path flows through the real
@@ -230,7 +230,9 @@ the category's `CategoryAttribute` rows fetched at request time, and
   collapses into a working hamburger menu below the `md` breakpoint), and
   `pending-review-flow.spec.ts` (Phase 10: a flagged listing disappears
   from public view but stays visible to a moderator, then reappears once
-  approved from the pending-review queue). `e2e/global-setup.ts`/`global-teardown.ts`
+  approved from the pending-review queue), and `saved-search-flow.spec.ts`
+  (Phase 12: save a search from `/search`, confirm it's listed on
+  `/saved-searches`, delete it). `e2e/global-setup.ts`/`global-teardown.ts`
   spawn and kill a
   real BullMQ worker process for the duration of the suite (via a
   detached process group + PID file, since Playwright's setup/teardown

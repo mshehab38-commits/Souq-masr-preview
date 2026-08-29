@@ -69,6 +69,36 @@ apart: `npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel
 fails the build if someone edits the schema without generating a
 migration.
 
+### Migration folder names must sort in dependency order — a real bug found in Phase 12
+
+`prisma migrate deploy` (used by CI and any fresh environment) applies
+migrations strictly in **lexicographic folder-name order**, not in the
+order they were actually created or applied to any existing database. A
+migration folder timestamped earlier than one it structurally depends on
+(e.g. an `ALTER TYPE ... ADD VALUE` folder named `074331` sorting before
+the `CREATE TYPE` folder it needs, named `130000`) will fail on a truly
+fresh database — `type "X" does not exist` — even though it applied fine
+to a dev database that already had the type from an earlier session.
+This is exactly what happened between
+`20260829130000_add_notifications` and what's now
+`20260829140000_add_listing_review_notification_types` (originally
+`20260829074331_...`, renamed to fix this). It went undetected because
+neither `migrate dev`'s shadow-database check nor a real deploy had run
+against this migration set from empty until Phase 12 (this project's CI
+only triggers on `push: main` / `pull_request`, neither of which had
+happened since the bad migration was added).
+
+**When creating a migration, verify its folder name sorts after every
+migration it structurally depends on** — not just after the previous
+migration chronologically. If it doesn't, rename the folder (`git mv`)
+and update the corresponding `_prisma_migrations.migration_name` row on
+every database that already applied it under the old name, or a fresh
+`migrate deploy` will disagree with an existing dev database about
+whether it's already applied. `npx prisma migrate dev` against the real
+schema (which replays every migration into a shadow database) is the
+cheapest way to catch this — run it after any migration-folder rename,
+not just after adding a new one.
+
 ## Entities
 
 ### Identity (Phase 2)
@@ -133,9 +163,24 @@ migration.
   worker fills in `thumbnailUrl`/`mediumUrl`/`fullUrl` and flips status to
   `READY` (or `REJECTED` on invalid/corrupt input) asynchronously.
 - **`Favorite`** — unique on `(userId, listingId)`.
-- **`SavedSearch`** — `query` is a `Json` blob of the search filters as
-  the user last configured them; no notification/alert delivery yet
-  (future phase).
+- **`SavedSearch`** — `query` is a `Json` blob of `RawSearchParams` (the
+  slug-based raw params, e.g. `{ q, category, governorate, city,
+  minPrice, maxPrice, sort }` — the same shape `/api/search` accepts and
+  `resolveSearchFilters` resolves), not the already-resolved
+  `SearchFilters` with real category/governorate/city IDs — this keeps a
+  saved search stable and independent of any specific database ID.
+  Existed since Phase 3 with no implementation at all until Phase 12,
+  which added full CRUD (`src/modules/search/saved-searches.ts`, capped
+  at 20 per user) plus match-and-notify: the `search-indexing` BullMQ job
+  calls `notifyMatchingSavedSearches()` after indexing a new listing,
+  which checks every saved search's filters against the listing (a
+  cheap field-predicate match, not a live search-engine query — see
+  `docs/DECISIONS.md`) and creates one `SAVED_SEARCH_MATCH` notification
+  per matching user. A known limitation, not yet solved: editing a
+  listing's title/description re-triggers the same indexing job, which
+  can send a repeat notification to a user already notified about that
+  listing — there is no dedup table tracking "already notified
+  (user, listing)" pairs yet.
 
 ### Seller Storefronts (Phase 4)
 
@@ -326,7 +371,8 @@ automated `SYSTEM` actions, so they were never meant to be conflated.
   `docs/DECISIONS.md`). There is still no email channel. `type` is a
   fixed `NotificationType` enum (`NEW_ORDER`/`ORDER_STATUS_CHANGED`/
   `LISTING_REMOVED`/`LISTING_FLAGGED_FOR_REVIEW`/
-  `LISTING_REVIEW_DECIDED`/`REPORT_RESOLVED`/`VERIFICATION_REVIEWED`).
+  `LISTING_REVIEW_DECIDED`/`REPORT_RESOLVED`/`VERIFICATION_REVIEWED`/
+  `SAVED_SEARCH_MATCH`).
   `link`, if set, is always
   an in-app path (e.g. `/orders/[id]`) — never an external URL, so
   there's no open-redirect surface through a notification. `readAt`

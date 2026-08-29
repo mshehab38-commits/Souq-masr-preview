@@ -837,6 +837,7 @@ enum NotificationType {
   LISTING_REVIEW_DECIDED
   REPORT_RESOLVED
   VERIFICATION_REVIEWED
+  SAVED_SEARCH_MATCH
 }
 
 // In-app only for now — no email/SMS channel exists for general

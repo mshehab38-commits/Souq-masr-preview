@@ -221,6 +221,33 @@ the query the same way it was applied when `searchText` was built (hamza
 unification, ة→ه, ى→ي, tashkeel stripping) — see
 `src/modules/catalog/search-text.ts`.
 
+## Saved Searches (Phase 12)
+
+### `GET /api/saved-searches`
+
+Any authenticated user. Returns `{ items }` — the caller's own saved
+searches, newest first.
+
+### `POST /api/saved-searches`
+
+Any authenticated user. Body: `{ name, query }` where `query` is the same
+raw shape `GET /api/search` accepts (`q`, `category`, `governorate`,
+`city`, `minPrice`, `maxPrice`, `sort` — slugs, not resolved IDs). Returns
+`409 { error: "limit_reached" }` past 20 saved searches for that user, or
+`201 { success: true, id }`.
+
+### `DELETE /api/saved-searches/[id]`
+
+Any authenticated user, ownership-scoped (a saved search belonging to
+another user returns `404`, not `403` — no confirmation that the id
+exists at all). Returns `{ ok: true }`.
+
+New listings are matched against every saved search's `query` right after
+search indexing (`src/jobs/search-indexing.ts` → `notifyMatchingSavedSearches`),
+creating a `SAVED_SEARCH_MATCH` notification (in-app + SMS, per the
+general notification pipeline) for each matching user — see
+`docs/DECISIONS.md` for how matching works and its known limitations.
+
 ## Local Upload Serving (Phase 3, dev/test only)
 
 ### `PUT /api/uploads/local/[...path]` / `GET /api/uploads/local/[...path]`

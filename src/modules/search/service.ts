@@ -4,6 +4,14 @@ import type { SearchProvider } from "./types";
 export type { SearchFilters, SearchPage, SearchResult, SearchResultItem, SortOption } from "./types";
 export { resolveSearchFilters } from "./query-params";
 export type { RawSearchParams } from "./query-params";
+export {
+  createSavedSearch,
+  listSavedSearches,
+  deleteSavedSearch,
+  matchesListing,
+  notifyMatchingSavedSearches,
+} from "./saved-searches";
+export type { CreateSavedSearchResult } from "./saved-searches";
 
 let cached: SearchProvider | null = null;
 
