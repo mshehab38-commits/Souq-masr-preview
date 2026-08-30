@@ -41,6 +41,17 @@ const baseEnvSchema = z.object({
   // against. See src/modules/identity/sms.ts and docs/DECISIONS.md.
   SMS_PROVIDER_API_URL: z.string().url().optional(),
   SMS_PROVIDER_API_KEY: z.string().min(1).optional(),
+  // Email gateway for general notifications (order updates, moderation
+  // decisions, etc.), delivered to User.email when a user has set one.
+  // Entirely optional, in every environment, including production: until
+  // both are set, ConsoleEmailProvider is used (logs only, never sends).
+  // Deliberately vendor-agnostic (a plain POST of { to, subject, text }
+  // with a bearer token) rather than a specific vendor's API (SendGrid/
+  // Resend/SES/Postmark/etc.) — no vendor has been chosen and none is
+  // guessed here, same reasoning as SMS. See
+  // src/modules/identity/email.ts and docs/DECISIONS.md.
+  EMAIL_PROVIDER_API_URL: z.string().url().optional(),
+  EMAIL_PROVIDER_API_KEY: z.string().min(1).optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((data, ctx) => {

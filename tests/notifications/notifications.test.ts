@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/db";
-import { getSmsProvider } from "@/modules/identity/service";
+import { getSmsProvider, getEmailProvider } from "@/modules/identity/service";
 import {
   createNotification,
   listNotifications,
@@ -103,6 +103,74 @@ describe("createNotification SMS mirror", () => {
     const stored = await prisma.notification.findUniqueOrThrow({ where: { id: notification.id } });
     expect(stored.title).toBe("تمت إزالة إعلانك");
     sendMessage.mockRestore();
+  });
+});
+
+describe("createNotification email mirror", () => {
+  afterEach(cleanup);
+
+  it("sends the notification text via the email provider when the user has an email", async () => {
+    const created = await makeUser();
+    const user = await prisma.user.update({ where: { id: created.id }, data: { email: "buyer@example.com" } });
+    const sendNotification = vi.spyOn(getEmailProvider(), "sendNotification").mockResolvedValueOnce();
+
+    await createNotification({
+      userId: user.id,
+      type: "ORDER_STATUS_CHANGED",
+      title: "تم شحن طلبك",
+      body: "سيصلك خلال يومين",
+    });
+
+    expect(sendNotification).toHaveBeenCalledWith(
+      "buyer@example.com",
+      "تم شحن طلبك",
+      "تم شحن طلبك — سيصلك خلال يومين",
+    );
+    sendNotification.mockRestore();
+  });
+
+  it("skips the email send entirely when the user has no email set", async () => {
+    const user = await makeUser(); // email is null by default
+    const sendNotification = vi.spyOn(getEmailProvider(), "sendNotification").mockResolvedValueOnce();
+
+    await createNotification({ userId: user.id, type: "NEW_ORDER", title: "لديك طلب جديد" });
+
+    expect(sendNotification).not.toHaveBeenCalled();
+    sendNotification.mockRestore();
+  });
+
+  it("still creates the in-app notification even if the email send throws", async () => {
+    const created = await makeUser();
+    const user = await prisma.user.update({ where: { id: created.id }, data: { email: "buyer@example.com" } });
+    const sendNotification = vi
+      .spyOn(getEmailProvider(), "sendNotification")
+      .mockRejectedValueOnce(new Error("smtp unreachable"));
+
+    const notification = await createNotification({
+      userId: user.id,
+      type: "LISTING_REMOVED",
+      title: "تمت إزالة إعلانك",
+    });
+
+    expect(notification.id).toBeDefined();
+    const stored = await prisma.notification.findUniqueOrThrow({ where: { id: notification.id } });
+    expect(stored.title).toBe("تمت إزالة إعلانك");
+    sendNotification.mockRestore();
+  });
+
+  it("does not let an email failure block a concurrent SMS send", async () => {
+    const created = await makeUser();
+    const user = await prisma.user.update({ where: { id: created.id }, data: { email: "buyer@example.com" } });
+    const sendMessage = vi.spyOn(getSmsProvider(), "sendMessage").mockResolvedValueOnce();
+    const sendNotification = vi
+      .spyOn(getEmailProvider(), "sendNotification")
+      .mockRejectedValueOnce(new Error("smtp unreachable"));
+
+    await createNotification({ userId: user.id, type: "NEW_ORDER", title: "لديك طلب جديد" });
+
+    expect(sendMessage).toHaveBeenCalled();
+    sendMessage.mockRestore();
+    sendNotification.mockRestore();
   });
 });
 

@@ -18,6 +18,7 @@ export default async function ProfilePage() {
     <ProfileView
       user={{
         name: user.name,
+        email: user.email,
         phone: formatEgyptianPhoneLocal(user.phone),
         role: user.role,
         phoneVerified: user.phoneVerifiedAt !== null,

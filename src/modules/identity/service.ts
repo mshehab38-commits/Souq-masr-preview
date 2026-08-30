@@ -19,6 +19,8 @@ export {
 export { normalizeEgyptianPhone, formatEgyptianPhoneLocal } from "./phone";
 export { getSmsProvider } from "./sms";
 export type { SmsProvider } from "./sms";
+export { normalizeEmail, getEmailProvider } from "./email";
+export type { EmailProvider } from "./email";
 export { listUsers, getUserDetail, setUserStatus, setUserRole } from "./admin-users";
 export type {
   ListUsersFilter,
