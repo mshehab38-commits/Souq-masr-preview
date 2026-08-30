@@ -53,11 +53,16 @@ just clearing the cookie) and clears both cookies.
 
 ### `GET /api/profile`
 
-Requires session. Returns the current user's profile fields.
+Requires session. Returns the current user's profile fields, including
+`email: string | null` (Phase 14).
 
 ### `PATCH /api/profile`
 
-Requires session + CSRF. Body: partial profile fields (currently `name`).
+Requires session + CSRF. Body: `name` (required), `email` (optional —
+omit to leave unchanged, empty string `""` to clear, otherwise validated
+via `normalizeEmail`; `400 invalid_email` on failure). `email` is a
+delivery address for notifications only, never a login credential — see
+`docs/DECISIONS.md`.
 
 ## Verification Requests (Phase 2)
 

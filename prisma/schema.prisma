@@ -30,6 +30,12 @@ model User {
   status             UserStatus @default(ACTIVE)
   phoneVerifiedAt    DateTime?
   commerceVerifiedAt DateTime?
+  // Optional delivery-only email address for notifications (Phase 14) —
+  // never a login credential and never unique: phone remains the sole
+  // identity key (see docs/DATABASE.md, docs/DECISIONS.md). No
+  // verification flow exists yet (no emailVerifiedAt) — deferred until a
+  // real collection/verification UI is built, not fabricated ahead of it.
+  email              String?
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
   deletedAt          DateTime?
@@ -863,9 +869,10 @@ enum NotificationType {
   SAVED_SEARCH_MATCH
 }
 
-// In-app only for now — no email/SMS channel exists for general
-// notifications (SmsProvider is OTP-only). Real external delivery needs a
-// provider decision the same way payments did; see docs/DECISIONS.md.
+// In-app row is always written. Since Phase 11/14, createNotification()
+// also attempts best-effort SMS and email mirrors (SmsProvider/
+// EmailProvider) — inert until a real gateway/provider is configured.
+// See docs/DECISIONS.md.
 model Notification {
   id     String           @id @default(cuid())
   userId String

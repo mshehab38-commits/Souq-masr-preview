@@ -16,6 +16,7 @@ type VerificationStatus = "PENDING" | "APPROVED" | "REJECTED";
 interface ProfileViewProps {
   user: {
     name: string | null;
+    email: string | null;
     phone: string;
     role: string;
     phoneVerified: boolean;
@@ -46,6 +47,8 @@ function csrfHeaders(): HeadersInit {
 export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
   const router = useRouter();
   const [name, setName] = useState(user.name ?? "");
+  const [email, setEmail] = useState(user.email ?? "");
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [nameSaved, setNameSaved] = useState(false);
   const [savingName, setSavingName] = useState(false);
 
@@ -60,13 +63,19 @@ export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
     event.preventDefault();
     setSavingName(true);
     setNameSaved(false);
+    setEmailError(null);
     try {
       const response = await fetch("/api/profile", {
         method: "PATCH",
         headers: csrfHeaders(),
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, email }),
       });
-      if (response.ok) setNameSaved(true);
+      if (response.ok) {
+        setNameSaved(true);
+      } else {
+        const data = await response.json().catch(() => null);
+        if (data?.error === "invalid_email") setEmailError("البريد الإلكتروني غير صالح");
+      }
     } finally {
       setSavingName(false);
     }
@@ -123,11 +132,17 @@ export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
           {user.phoneVerified && <VerifiedBadge />}
           {user.commerceVerified && <Badge tone="success">بائع موثّق</Badge>}
         </div>
-        <form onSubmit={handleSaveName} className="flex items-end gap-3">
-          <div className="flex-1">
-            <Input label="الاسم" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <Button type="submit" loading={savingName} size="md">
+        <form onSubmit={handleSaveName} className="flex flex-col gap-3">
+          <Input label="الاسم" value={name} onChange={(e) => setName(e.target.value)} />
+          <Input
+            label="البريد الإلكتروني (اختياري)"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            error={emailError ?? undefined}
+            hint="يُستخدم فقط لإرسال إشعارات الطلبات والمراجعة — لا يُستخدم لتسجيل الدخول"
+          />
+          <Button type="submit" loading={savingName} size="md" className="self-start">
             حفظ
           </Button>
         </form>

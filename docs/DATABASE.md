@@ -135,7 +135,10 @@ sync" as the only acceptable result.**
   username. `role` (`INDIVIDUAL`/`BUSINESS`/`MODERATOR`/`ADMIN`) drives
   RBAC. `commerceVerifiedAt` gates whether an *individual* seller (not
   just a business) can enable checkout on a listing — see
-  `commerceEligibility.ts`.
+  `commerceEligibility.ts`. Phase 14 adds an optional, non-unique
+  `email` purely as a notification delivery address — it is never a
+  login credential and carries no verification state yet (no
+  `emailVerifiedAt`).
 - **`OtpCode`** — keyed by `phone`, not `userId`: a code can be requested
   before any `User` row exists, since first-time OTP verification is also
   registration. Only a hash (`codeHash`, mixed with `OTP_PEPPER`) is
@@ -408,7 +411,11 @@ automated `SYSTEM` actions, so they were never meant to be conflated.
   also attempts a best-effort SMS mirror via the now general-purpose
   `SmsProvider` (`sendMessage`, alongside its original OTP-only
   `sendOtp`) — inert until a real gateway is configured (see
-  `docs/DECISIONS.md`). There is still no email channel. `type` is a
+  `docs/DECISIONS.md`). Since Phase 14, it also attempts a best-effort
+  email mirror via `EmailProvider` (`sendNotification`) whenever
+  `User.email` is set — inert until a real provider is configured, same
+  as SMS, and dispatched concurrently with (not blocking, and not
+  blocked by) the SMS attempt. `type` is a
   fixed `NotificationType` enum (`NEW_ORDER`/`ORDER_STATUS_CHANGED`/
   `LISTING_REMOVED`/`LISTING_FLAGGED_FOR_REVIEW`/
   `LISTING_REVIEW_DECIDED`/`REPORT_RESOLVED`/`VERIFICATION_REVIEWED`/

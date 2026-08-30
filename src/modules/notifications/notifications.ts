@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import type { NotificationType } from "@prisma/client";
-import { getSmsProvider } from "@/modules/identity/service";
+import { getSmsProvider, getEmailProvider } from "@/modules/identity/service";
 import { logger } from "@/lib/logger";
 
 const DEFAULT_LIMIT = 20;
@@ -18,16 +18,22 @@ export interface CreateNotificationInput {
 // caller passes the target userId explicitly, the same "never inferred"
 // philosophy the ledger module uses for `account`.
 //
-// Every notification also gets a best-effort SMS mirror (Phase 11) —
-// deliberately every NotificationType, not a curated subset: the
-// alternative (an allowlist of "important enough" types) is an arbitrary
-// judgment call with no real usage data behind it yet, whereas "notify
-// everywhere" is a simple, easy-to-narrow-later default. It costs nothing
-// until the owner configures a real SMS gateway (see
-// src/modules/identity/sms.ts) — until then this only logs. A failure
-// here (lookup or send) is logged and swallowed, never allowed to make
-// notification creation itself fail — the in-app row is the source of
-// truth; SMS is a delivery channel on top of it, not a dependency.
+// Every notification also gets best-effort SMS (Phase 11) and email
+// (Phase 14) mirrors — deliberately every NotificationType, not a
+// curated subset: the alternative (an allowlist of "important enough"
+// types) is an arbitrary judgment call with no real usage data behind it
+// yet, whereas "notify everywhere" is a simple, easy-to-narrow-later
+// default. Both channels cost nothing until the owner configures a real
+// gateway/provider (see src/modules/identity/sms.ts,
+// src/modules/identity/email.ts) — until then they only log. The two
+// channels are dispatched concurrently and independently: neither
+// depends on the other's outcome, and running them in series would
+// double the inline latency added to every notification-creating request
+// path (checkout, order transitions, moderation actions) for no benefit.
+// A failure anywhere in this block (lookup or either send) is logged and
+// swallowed, never allowed to make notification creation itself fail —
+// the in-app row is the source of truth; SMS/email are delivery channels
+// on top of it, not dependencies.
 export async function createNotification(input: CreateNotificationInput) {
   const notification = await prisma.notification.create({
     data: {
@@ -40,13 +46,32 @@ export async function createNotification(input: CreateNotificationInput) {
   });
 
   try {
-    const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { phone: true } });
+    const user = await prisma.user.findUnique({
+      where: { id: input.userId },
+      select: { phone: true, email: true },
+    });
     if (user) {
       const text = input.body ? `${input.title} — ${input.body}` : input.title;
-      await getSmsProvider().sendMessage(user.phone, text);
+      await Promise.allSettled([
+        (async () => {
+          try {
+            await getSmsProvider().sendMessage(user.phone, text);
+          } catch (error) {
+            logger.error("Failed to send notification SMS", { userId: input.userId, error: String(error) });
+          }
+        })(),
+        (async () => {
+          if (!user.email) return;
+          try {
+            await getEmailProvider().sendNotification(user.email, input.title, text);
+          } catch (error) {
+            logger.error("Failed to send notification email", { userId: input.userId, error: String(error) });
+          }
+        })(),
+      ]);
     }
   } catch (error) {
-    logger.error("Failed to send notification SMS", { userId: input.userId, error: String(error) });
+    logger.error("Failed to dispatch notification delivery channels", { userId: input.userId, error: String(error) });
   }
 
   return notification;

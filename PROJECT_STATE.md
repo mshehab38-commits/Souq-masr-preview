@@ -7,15 +7,15 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-29 (Phase 13 completion)
+Last updated: 2026-08-30 (Phase 14 completion)
 
 ## Current Status
 
-**Phase 13 (Saved-search notification dedup: a new `SavedSearchNotification`
-table so a listing edit re-triggering search-indexing never re-notifies an
-already-notified user, plus a second occurrence of Phase 12's
-migration-ordering bug found and fixed in the same pass) is COMPLETE,
-validated, committed, and pushed.**
+**Phase 14 (Email notification delivery: a vendor-agnostic `EmailProvider`
+abstraction mirroring Phase 11's `SmsProvider` exactly, an optional
+non-unique `User.email` delivery address collected via the existing
+profile page, and concurrent SMS+email dispatch in `createNotification`)
+is COMPLETE, validated, committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -63,8 +63,9 @@ tasks to be framed across disciplines).
 | 10 | Proactive moderation: flag-for-review escalation, pending-review admin queue, listing visibility gating fix | `e36dad3` | Done |
 | 11 | SMS notification delivery: general-purpose `SmsProvider`, vendor-agnostic real gateway, SMS mirror on every notification | `d9ee7df` | Done |
 | 12 | Saved-search alerts: CRUD + match-and-notify pipeline, migration-ordering bug fix | `0f5242b`, `492e876` | Done |
-| 13 | Saved-search notification dedup, second migration-ordering bug fix | this session | **Done** |
-| 14 | Remaining roadmap items (see Deferred below) | — | Not started |
+| 13 | Saved-search notification dedup, second migration-ordering bug fix | `ff69c0d` | Done |
+| 14 | Email notification delivery: `EmailProvider` abstraction, optional `User.email` profile field, concurrent SMS+email dispatch | this session | **Done** |
+| 15 | Remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -492,6 +493,36 @@ no-argument `npx prisma migrate dev` (reports "already in sync" or fails
 rule: that bare `migrate dev` check is now the mandatory last step of
 any migration change, not just a nice-to-have.
 
+## What Was Completed in Phase 14
+
+- **`User.email`**: an optional, non-unique field (migration
+  `20260830091324_add_user_email`) — a notification delivery address
+  only, never a login credential; phone remains the sole identity key.
+  No `emailVerifiedAt` yet — no collect-then-verify flow exists, so the
+  column would be permanently `null` if added now (deferred, not
+  fabricated).
+- **`EmailProvider` abstraction** (`src/modules/identity/email.ts`) —
+  mirrors `SmsProvider` exactly: `ConsoleEmailProvider` (default, logs
+  only) and `HttpEmailProvider` (vendor-neutral POST of
+  `{ to, subject, text }` with a bearer token), selected by a
+  module-singleton `getEmailProvider()` gated on
+  `EMAIL_PROVIDER_API_URL`/`EMAIL_PROVIDER_API_KEY` both being present —
+  neither var is required in production (same treatment as SMS/Sentry).
+  Also adds `normalizeEmail(raw): string | null`, a hand-rolled pure
+  validator matching `normalizeEgyptianPhone`'s convention.
+- **`createNotification` now dispatches SMS and email concurrently** via
+  `Promise.allSettled`, each independently try/caught — an email failure
+  can never block/suppress the SMS attempt or vice versa, and neither can
+  make the in-app `Notification` row fail to save. The email send is
+  skipped entirely (not attempted, not logged as a failure) when the
+  target user has no `email` set.
+- **Profile UI/API**: `/profile` gained an "البريد الإلكتروني (اختياري)"
+  field alongside the existing name field, saved through the same
+  `PATCH /api/profile` call (`name` required, `email` optional — omit to
+  leave unchanged, `""` to clear, otherwise validated via
+  `normalizeEmail` with `400 invalid_email` on failure). `GET /api/profile`
+  now also returns `email`.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -522,49 +553,43 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 15 migrations applied — this phase added
-  `20260829150000_add_saved_search_notifications` (new
-  `SavedSearchNotification` table, `@@unique([userId, listingId])`, no
-  relation to `SavedSearch`). Also: the Phase 12 migration
-  `20260829084100_add_saved_search_match_notification_type` was renamed
-  to `20260829141000_...` to fix a *second* occurrence of the same
-  ordering bug fixed in Phase 12 — see "Bug Found and Fixed in Phase 13"
-  above. Schema at `prisma/schema.prisma`. See `docs/DATABASE.md` for
-  full entity documentation and the migration-ordering rule this
-  reinforces.
+- 16 migrations applied — this phase added
+  `20260830091324_add_user_email` (`ALTER TABLE "users" ADD COLUMN
+  "email" TEXT` — no index, no unique constraint, no FK; purely additive
+  to an existing table, so no ordering-bug risk). Schema at
+  `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
+  documentation.
 
-## Tests & Results (Phase 13, all green)
+## Tests & Results (Phase 14, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (219 modules, 775 dependencies —
-  +1 from the new `Prisma` import in `saved-searches.ts`).
-- `npm test` — **281/281 unit tests passing** across 34 files. New this
-  phase: 6 tests split across `tests/search/saved-searches.test.ts` (5 —
-  no re-notify on a second call, a newly-added saved search still fires
-  while an already-claimed user is skipped in the same run, a
-  pre-existing claim is honored even with no prior notification through
-  this function, deleting one of two matching saved searches doesn't
-  cause a re-notify from the other, a different listing still notifies
-  independently) and `tests/jobs/search-indexing.test.ts` (1 — a second
-  `indexListingJob` run for the same listing, the literal reported
-  scenario, does not re-notify).
-- `npx playwright test` — **8/8 e2e specs passing**, all unmodified (no
-  UI changed this phase). Two real, non-flaky fixes to
-  `playwright.config.ts` came out of chasing intermittent failures during
-  this phase's validation, both confirmed as genuine sandbox-timing gaps
-  rather than assumed-away flakiness: (1) `expect.timeout` was never set,
-  so every `expect(...).toBeVisible()` used Playwright's 5s default,
-  independent of the suite's 60s per-test timeout — an admin page's
-  client-side data fetch on a cold route compile could exceed 5s with the
-  test's overall budget nowhere near exhausted (confirmed via failure
-  snapshots showing the page still mid "جارٍ التحميل..."); raised to
-  15s. (2) `store-management-flow.spec.ts` (untouched by this phase) hit
-  the existing 60s test timeout at a measured 48.3s when re-run with more
-  headroom — genuinely slow, not hung — so the global test timeout was
-  raised again, to 90s. See `docs/DECISIONS.md`.
-- `npm run build` — clean, warning-free production build, no new routes
-  (Phase 13 added no API surface).
+- `npm run boundaries` — no violations (220 modules, 779 dependencies —
+  +1 module for the new `src/modules/identity/email.ts`).
+- `npm test` — **296/296 unit tests passing** across 36 files. New this
+  phase: `tests/identity/email-normalize.test.ts` (10 — valid/invalid
+  `normalizeEmail` cases), `tests/identity/email.test.ts` (1 — console
+  fallback never leaks subject/text), and 4 new tests in
+  `tests/notifications/notifications.test.ts`'s "createNotification email
+  mirror" block (sends via the email provider when set, skips entirely
+  when unset, still creates the in-app row if the email send throws, an
+  email failure never blocks a concurrent SMS send).
+- `npx playwright test` — **8/8 e2e specs passing**. `e2e/auth-signup.spec.ts`
+  extended (not a new spec) to fill/save the new email field and confirm
+  it persists across a page reload.
+- `npm run build` — clean, warning-free production build; no new routes,
+  `/profile`'s bundle grew slightly for the new form field.
+- `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
+  sync" as the final gate, per the standing rule from Phase 13.
+
+### Tests & Results (Phase 13, for reference)
+
+- `npm test` — 281/281 unit tests passing across 34 files
+  (`tests/search/saved-searches.test.ts` +5, `tests/jobs/search-indexing.test.ts` +1).
+- `npx playwright test` — 8/8 e2e specs passing, all unmodified; two
+  `playwright.config.ts` timeout fixes (`expect.timeout` 5s→15s, global
+  `timeout` 60s→90s) — see `docs/DECISIONS.md`.
+- `npm run build` — clean, warning-free, no new routes.
 
 ### Tests & Results (Phase 12, for reference)
 
@@ -889,6 +914,33 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   longer-timeout re-runs showing real, if slow, completion), not
   dismissed as "the sandbox is just flaky" without checking.
 
+## Technical/Architecture Decisions (Phase 14)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `User.email` is optional and **not** `@unique` — a delivery address,
+  never an identity key. Phone stays the sole login credential; two
+  accounts sharing a mailbox (e.g. a family shop) must stay possible.
+  No `emailVerifiedAt` either — no collect-then-verify UI exists yet, so
+  an always-`null` column would be the same "looks real, does nothing"
+  anti-pattern already rejected for delivery itself.
+- `EmailProvider` mirrors `SmsProvider` exactly: same
+  console/HTTP-provider split, same vendor-neutral `{ to, subject, text }`
+  POST contract (no vendor named — zero email SDK deps in
+  `package.json`), same env-var-presence gating (optional everywhere,
+  never required in production), same singleton-cache selection.
+- SMS and email are dispatched **concurrently** (`Promise.allSettled`),
+  each independently try/caught, not in series — two inline network
+  calls in series would double the added latency on every
+  notification-creating request path for no benefit, since neither
+  channel depends on the other's outcome.
+- Inline/best-effort, not a new BullMQ queue — matches SMS's existing
+  treatment; queuing email is a legitimate but distinct architectural
+  call, explicitly out of scope this phase.
+- Collected through the existing `/profile` page (the only self-service
+  profile surface), not a new page — mirrors the already-shipped `name`
+  field's save flow exactly.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -958,25 +1010,25 @@ None.
 
 ## Exact Next Action
 
-Phase 13 is committed and pushed (both branches kept in sync — see Git
+Phase 14 is committed and pushed (both branches kept in sync — see Git
 Safety in `CLAUDE.md` and this session's owner authorization to merge
 into `main`). Per the standing execution rule (one phase at a time,
 validate, stop for approval), **this session stops here**, awaiting
-direction on what to build next. Candidates, in rough priority order
-given what's genuinely missing today:
+direction on what to build next.
 
-- **Email notification delivery** — still not built; no provider
-  decision made, and would need a new `User.email` field (this app is
-  phone-first, no email field exists on `User` today). The
-  next-most-substantial purely-technical gap remaining: everything else
-  below is either an owner-only action (no engineering left to do) or an
-  explicit OWNER DECISION REQUIRED product call.
-- **SMS gateway activation** — purely an owner action now (pick a
-  gateway, set `SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`, optionally
-  a thin adapter if the chosen gateway's API doesn't already match the
-  `{ to, message }` + bearer-token contract), not engineering work; see
-  `docs/DECISIONS.md`. Every other notification path already works fully
-  regardless (in-app always; SMS best-effort once configured).
+Notification delivery is now complete across all three channels
+(in-app, SMS, email — Phases 7/11/14), closing what had been the
+top-priority purely-technical candidate for three phases running.
+Re-deriving honestly rather than assuming a prior session's list still
+holds: **no further purely-technical, owner-decision-free gap was
+identified this session.** Everything remaining in the roadmap is one of:
+
+- **SMS gateway activation** — purely an owner action (pick a gateway,
+  set `SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`); see
+  `docs/DECISIONS.md`.
+- **Email gateway activation** — purely an owner action (pick a vendor,
+  set `EMAIL_PROVIDER_API_URL`/`EMAIL_PROVIDER_API_KEY`); see
+  `docs/DECISIONS.md`.
 - **Sentry activation** — purely an owner action (create a project, set
   two env vars); see "OWNER DECISION REQUIRED — Open" above. Still open,
   unchanged since Phase 8.
@@ -991,5 +1043,9 @@ given what's genuinely missing today:
   owner has them, verifying the integration against Paymob's live
   sandbox).
 
-Read this file + `docs/*` fresh at the start of that session and confirm
-current git state matches this document before writing any code.
+A future session should re-run its own OODA audit (CLAUDE.md Section 4)
+rather than trust this list unchecked — new gaps may surface as the app
+gets real usage, and this session's own read was necessarily scoped to
+what an Explore pass could surface, not exhaustive. Read this file +
+`docs/*` fresh at the start of that session and confirm current git
+state matches this document before writing any code.

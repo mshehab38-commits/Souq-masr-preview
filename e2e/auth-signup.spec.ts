@@ -45,8 +45,12 @@ test.describe("phone OTP signup golden path", () => {
     await expect(page.getByRole("button", { name: "تسجيل الخروج" })).toBeVisible();
 
     await page.getByLabel("الاسم").fill("مستخدم تجريبي");
+    await page.getByLabel("البريد الإلكتروني (اختياري)").fill("test@example.com");
     await page.getByRole("button", { name: "حفظ" }).click();
     await expect(page.getByText("تم الحفظ بنجاح")).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByLabel("البريد الإلكتروني (اختياري)")).toHaveValue("test@example.com");
 
     await page.getByRole("button", { name: "إرسال طلب التوثيق" }).click();
     await expect(page.getByText("قيد المراجعة")).toBeVisible();

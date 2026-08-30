@@ -774,3 +774,60 @@ a fixed assertion timeout and test timeout are correctness settings for
 this sandbox's real compile-cost profile, not workarounds for a flaky
 test. See the inline comments in `playwright.config.ts` for the same
 rationale kept next to the settings themselves.
+
+## The real email provider is a generic HTTP POST, not a specific vendor's API
+
+Phase 14 added `EmailProvider` to close the last real notification-
+delivery gap (in-app since Phase 7, SMS since Phase 11). The same
+reasoning already established for SMS applies unchanged: no email vendor
+(SendGrid, Resend, Amazon SES, Postmark, Mailgun, etc.) has been named or
+chosen for this project, and guessing one from training knowledge risks
+building against an API shape nothing real matches — the exact problem
+already flagged for Paymob and repeated for SMS. `package.json` has zero
+email SDK dependencies, confirming nothing has been decided yet.
+`HttpEmailProvider` (`src/modules/identity/email.ts`) instead POSTs a
+vendor-neutral `{ to, subject, text }` JSON body with a bearer token to a
+configurable URL (`EMAIL_PROVIDER_API_URL`/`EMAIL_PROVIDER_API_KEY`,
+optional everywhere including production, gated the same explicit-
+presence check as SMS and Sentry — never the SDK/fetch's own absence-
+tolerant behavior). Activating it for a real vendor needs, at most, a
+thin adapter in front of that vendor's API satisfying this one contract;
+until then, `ConsoleEmailProvider` logs an attempt and does nothing,
+exactly like `ConsoleSmsProvider`.
+
+## Email joins SMS as a best-effort mirror on every notification — dispatched concurrently, neither blocks the other
+
+Extends "every notification also gets an SMS attempt — no per-type
+allowlist" (above): `createNotification()` now also attempts an email
+mirror for every `NotificationType`, with the same "notify everywhere,
+narrow later if real usage data ever justifies it" reasoning — curating
+a subset today would be an arbitrary judgment call with nothing behind
+it. The two channels are dispatched via `Promise.allSettled` around two
+independently try/caught async blocks, not run in sequence: a listing
+edit, order transition, or moderation action already pays for one inline
+network round-trip (SMS) on its request path, and running email
+afterward in series would silently double that added latency for zero
+benefit, since neither channel's outcome affects the other. A rejection
+from either provider is logged and swallowed at its own call site — it
+can never suppress the other channel's attempt, and neither can ever
+make the in-app `Notification` row (still written first, still the
+source of truth) fail to save.
+
+## `User.email` is optional and not unique — a delivery address, never an identity key
+
+`docs/DATABASE.md` has always described `phone` as *the* unique
+identifier — Phase 14's `email` field must not quietly contradict that.
+It is added as plain `email String?`, with no `@unique` constraint and no
+`emailVerifiedAt`. Two considerations drove this, not one: first, a
+unique constraint on an auth-adjacent field is exactly the kind of
+implicit signal ("this is how the system finds/logs in a user") this
+codebase has deliberately kept off `email` by never building it until
+now — a shared mailbox across two legitimate accounts (e.g. a small
+family shop) should not be structurally impossible for a field that
+exists purely for delivery. Second, `emailVerifiedAt` was considered (to
+mirror `phoneVerifiedAt`) and rejected for this phase specifically
+because no collection-then-verify UI flow exists yet either way — an
+always-`null` column with zero write path is the same "looks real, does
+nothing" anti-pattern Phase 7's own decision doc rejected for delivery
+itself. Both are left for whichever future phase actually builds real
+email verification, rather than fabricated ahead of it.
