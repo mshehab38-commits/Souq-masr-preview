@@ -276,12 +276,14 @@ error for every invalid state: `listing_not_found`,
 `payment_method_unavailable` (`ONLINE` requested but no live gateway is
 configured), `shipping_company_required` (a `PLATFORM_SHIPPING` listing
 with no company chosen), `shipping_rate_unavailable` (the chosen company
-has no rate for the buyer's governorate and no default fee). On success,
-snapshots `productPrice`/`shippingFee`/`shippingCommissionAmount` from
-whatever's in effect right now, reserves the listing (`SOLD`), and
-returns `{ success, orderId, redirectUrl? }` — `redirectUrl` is only
-present for a (currently unreachable, since `ONLINE` requires live
-credentials) online-payment checkout.
+has no rate for the buyer's governorate and no default fee),
+`listing_already_sold` (lost a race against a concurrent checkout on the
+same listing — see `docs/DECISIONS.md`). On success, snapshots
+`productPrice`/`shippingFee`/`shippingCommissionAmount` from whatever's
+in effect right now, reserves the listing (`SOLD`) atomically alongside
+order creation, and returns `{ success, orderId, redirectUrl? }` —
+`redirectUrl` is only present for a (currently unreachable, since
+`ONLINE` requires live credentials) online-payment checkout.
 
 ### `GET /api/orders/[id]`
 

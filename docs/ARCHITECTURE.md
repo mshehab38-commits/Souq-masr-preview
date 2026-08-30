@@ -213,7 +213,7 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 296 tests across 36
+  against the real dev Postgres/Redis (not mocked) — 309 tests across 38
   files as of Phase 13.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.

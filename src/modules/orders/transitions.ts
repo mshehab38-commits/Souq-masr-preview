@@ -54,7 +54,20 @@ export async function transitionOrder(
     data.cancelReason = input.cancelReason;
   }
 
-  await prisma.order.update({ where: { id: orderId }, data });
+  // Guarded by the status we actually read, not just the id: two
+  // concurrent transition calls (e.g. a buyer and an admin racing to
+  // cancel/confirm the same order) can both pass the canTransition()
+  // check above against the same stale read, but only one can win this
+  // conditional update — the loser's WHERE no longer matches once the
+  // winner commits. This also makes recordCompletionFinancials below
+  // naturally idempotent: a duplicate "mark COMPLETED" call fails this
+  // guard on its second attempt, so it can never post a ledger
+  // entry/payout twice for the same order.
+  const updateResult = await prisma.order.updateMany({
+    where: { id: orderId, status: order.status },
+    data,
+  });
+  if (updateResult.count === 0) return { success: false, error: "invalid_transition" };
 
   // Cancelling releases the reservation placed at checkout time (see
   // checkout.ts) — the listing goes back on the market with a fresh

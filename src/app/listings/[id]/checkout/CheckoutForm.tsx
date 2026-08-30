@@ -119,7 +119,9 @@ export function CheckoutForm({
         setError(
           data.error === "shipping_rate_unavailable"
             ? "لا تتوفر شركة شحن لهذه المحافظة حالياً"
-            : "تعذر إتمام الطلب، حاول مرة أخرى",
+            : data.error === "listing_already_sold"
+              ? "تم بيع هذا الإعلان لمشترٍ آخر للتو"
+              : "تعذر إتمام الطلب، حاول مرة أخرى",
         );
         return;
       }

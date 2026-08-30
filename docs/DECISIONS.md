@@ -831,3 +831,103 @@ always-`null` column with zero write path is the same "looks real, does
 nothing" anti-pattern Phase 7's own decision doc rejected for delivery
 itself. Both are left for whichever future phase actually builds real
 email verification, rather than fabricated ahead of it.
+
+## `createOrder`'s listing reservation was a real, unguarded double-sell race — found and fixed in Phase 15
+
+`createOrder` read a listing (`findFirst({ where: { status: "ACTIVE" } })`),
+created an `Order` row, then wrote `listing.update({ data: { status: "SOLD" } })`
+— a plain, unconditional update with no guard against what the listing's
+status actually was *at the moment of the write*, not just at the moment
+of the read. Two concurrent checkouts on the same listing could both pass
+the initial read before either wrote, both create their own `Order` row,
+and both flip the listing to `SOLD` — two buyers, each believing they
+bought the same item, with nothing in the code path ever noticing. The
+comment directly above the write already said "reserve the listing
+immediately so it can't be sold to two buyers at once," but the code
+never actually enforced that atomically — this was a real defect, not a
+hypothetical.
+
+Fixed by reordering: the listing is now reserved *before* the order is
+created, and both happen inside one `prisma.$transaction`:
+`listing.updateMany({ where: { id, status: "ACTIVE" }, data: { status: "SOLD" } })`
+followed by `order.create(...)`, with a `listing_already_sold` result
+returned if the `updateMany`'s row count is `0`. The `WHERE status:
+"ACTIVE"` clause is the actual concurrency control — Postgres serializes
+concurrent `UPDATE`s against the same row, so the second writer's
+`WHERE` simply no longer matches once the first writer's update commits;
+no explicit locking or retry logic is needed. Wrapping the reservation
+and the order creation in the same transaction (rather than reserving
+first and creating the order as a separate statement) means a failure
+creating the order — rare, but possible — rolls the reservation back
+too, instead of leaving the listing stuck at `SOLD` with no order to
+show for it. `checkout.test.ts` has a regression test that fires two
+concurrent `createOrder` calls at the same listing and asserts exactly
+one order is created; it reproducibly failed against the old code before
+this fix (both calls succeeded) and passes reproducibly now.
+
+`transitionOrder` had the identical shape of bug: read the order, check
+`canTransition()` against that read, then write with a plain
+`order.update({ where: { id: orderId } })` — no guard against the order's
+status having changed between the read and the write. Fixed the same
+way, without a transaction this time since there's only one write:
+`order.updateMany({ where: { id: orderId, status: order.status }, data })`,
+checking the row count before proceeding. This closes two problems at
+once: the direct one (two concurrent transitions racing, e.g. a buyer and
+an admin both trying to cancel/confirm at the same moment) and a
+downstream one — `recordCompletionFinancials` (the function that posts a
+`SellerPayout`/`LedgerEntry` on reaching `COMPLETED`) had no idempotency
+check of its own, so two concurrent "mark COMPLETED" calls against the
+same order could each independently post financial rows for it. The
+status-match guard makes a duplicate call fail before it ever reaches
+that code, for free — no separate idempotency key needed.
+
+## CI workflow was missing a Redis service — every test/e2e step would have failed to connect
+
+`.github/workflows/ci.yml` set `REDIS_URL: redis://localhost:6379` as a
+job-wide env var but never actually started a Redis container — only
+`postgres` had a `services:` entry. Every test suite that touches OTP
+rate limiting, report rate limiting, or anything BullMQ-backed (which is
+most of `tests/` and all of `e2e/`) connects to Redis directly; with none
+reachable, `npm test`/`npm run e2e` would fail immediately on the first
+Redis call. This went undetected because — as already noted elsewhere in
+this repo's history — this workflow triggers only on `push: main`/
+`pull_request`, neither of which had happened yet, so it had never
+actually run. Fixed by adding a `redis: image: redis:7-alpine` service
+block mirroring the existing `postgres` block (same health-check
+pattern), matching `docker-compose.yml`'s own Redis image.
+
+## Paymob webhook's `merchant_order_id` extraction is read from two possible locations, not asserted to one
+
+Auditing `PaymobPaymentProvider.verifyWebhook()` (never previously
+exercised by any test — see the next entry) turned up an internal
+inconsistency: every other field the function reads comes from nested
+objects (`obj`, `obj.order`, `obj.source_data`), but the line extracting
+the actual order id to update read `merchant_order_id` from the
+top-level parsed payload instead. This class's own comment already
+states the integration has never been exercised against Paymob's real
+sandbox, and this session's attempt to confirm the documented payload
+shape against Paymob's live docs was blocked by this environment's
+network egress policy — so which location is actually correct in
+production could not be confirmed here. Rather than pick one and assert
+it with false confidence, the fix checks the nested location first (the
+one consistent with everything else this function reads) with a
+fallback to the top-level field, so the webhook keeps working regardless
+of which shape Paymob's real payload turns out to use. This does not
+replace the existing "verify against Paymob's sandbox before going
+live" requirement — it just means a wrong guess here won't silently
+break payment-status updates in production while that verification is
+still pending.
+
+## `payments` module had zero test coverage — added for `CodPaymentProvider`, `getPaymentProvider`, and `verifyWebhook`
+
+Discovered during the same audit as the two entries above: no
+`tests/payments/` directory existed at all, meaning the webhook
+signature-verification logic above (a financial-state-mutating code
+path) had never been exercised by a single automated test, even a
+synthetic one requiring no real credentials. `tests/payments/providers.test.ts`
+and `tests/payments/paymob-webhook.test.ts` close this gap, the latter
+building a synthetic Paymob-shaped payload and computing its HMAC with
+the same algorithm `verifyWebhook()` itself uses, so the test is
+independent of ever having real Paymob credentials — it validates the
+parsing/verification *logic*, not the *real API shape* (that half stays
+gated on live sandbox access, per the existing deferred item).

@@ -242,6 +242,28 @@ describe("transitionOrder", () => {
     expect(payout.sellerId).toBe(seller.id);
   });
 
+  it("under two concurrent transitions on the same order from the same state, exactly one wins", async () => {
+    const buyer = await makeUser();
+    const seller = await makeUser();
+    const category = await makeCategory();
+    const { order } = await makeOrder(buyer.id, seller.id, category.id);
+
+    const [resultA, resultB] = await Promise.all([
+      transitionOrder(order.id, seller.id, false, { targetStatus: "CONFIRMED" }),
+      transitionOrder(order.id, seller.id, false, { targetStatus: "CONFIRMED" }),
+    ]);
+
+    const results = [resultA, resultB];
+    const wins = results.filter((r) => r.success);
+    const losses = results.filter((r) => !r.success);
+    expect(wins).toHaveLength(1);
+    expect(losses).toHaveLength(1);
+    expect(losses[0]).toEqual({ success: false, error: "invalid_transition" });
+
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.status).toBe("CONFIRMED");
+  });
+
   it("walks a SELF_ARRANGED order through the full happy path to COMPLETED", async () => {
     const buyer = await makeUser();
     const seller = await makeUser();
