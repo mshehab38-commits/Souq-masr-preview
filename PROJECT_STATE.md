@@ -7,15 +7,15 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-30 (Phase 14 completion)
+Last updated: 2026-08-30 (Phase 15 completion)
 
 ## Current Status
 
-**Phase 14 (Email notification delivery: a vendor-agnostic `EmailProvider`
-abstraction mirroring Phase 11's `SmsProvider` exactly, an optional
-non-unique `User.email` delivery address collected via the existing
-profile page, and concurrent SMS+email dispatch in `createNotification`)
-is COMPLETE, validated, committed, and pushed.**
+**Phase 15 (Concurrency-safety hardening: a real double-sell race in
+checkout closed, a matching race in order transitions closed, a missing
+Redis service in CI fixed, and test coverage added for the previously
+untested `payments` module) is COMPLETE, validated, committed, and
+pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -64,8 +64,9 @@ tasks to be framed across disciplines).
 | 11 | SMS notification delivery: general-purpose `SmsProvider`, vendor-agnostic real gateway, SMS mirror on every notification | `d9ee7df` | Done |
 | 12 | Saved-search alerts: CRUD + match-and-notify pipeline, migration-ordering bug fix | `0f5242b`, `492e876` | Done |
 | 13 | Saved-search notification dedup, second migration-ordering bug fix | `ff69c0d` | Done |
-| 14 | Email notification delivery: `EmailProvider` abstraction, optional `User.email` profile field, concurrent SMS+email dispatch | this session | **Done** |
-| 15 | Remaining roadmap items (see Deferred below) | — | Not started |
+| 14 | Email notification delivery: `EmailProvider` abstraction, optional `User.email` profile field, concurrent SMS+email dispatch | `d201c59` | Done |
+| 15 | Concurrency-safety hardening: checkout double-sell race fixed, order-transition race fixed, CI missing Redis service fixed, `payments` module test coverage added | this session | **Done** |
+| 16 | Remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -523,6 +524,84 @@ any migration change, not just a nice-to-have.
   `normalizeEmail` with `400 invalid_email` on failure). `GET /api/profile`
   now also returns `email`.
 
+## What Was Completed in Phase 15
+
+A fresh, no-assumptions OODA audit (the prior session's own instruction:
+re-run this rather than trust its "nothing left" conclusion unchecked)
+found real gaps outside the previously-tracked candidate list — this
+phase closes the highest-severity ones:
+
+- **`createOrder`'s listing reservation is now atomic**: the listing is
+  reserved (`updateMany` guarded on `status: "ACTIVE"`) *before* the
+  order is created, both inside one `$transaction`, with a new
+  `listing_already_sold` result if the reservation loses the race. See
+  "Bug Found and Fixed in Phase 15" below.
+- **`transitionOrder`'s status write is now atomic**: guarded by
+  `updateMany({ where: { id, status: order.status } })` instead of a
+  plain `update`, closing the same class of race and making
+  `recordCompletionFinancials` naturally idempotent as a side effect.
+- **`.github/workflows/ci.yml` now starts a Redis service** — it never
+  had one, only Postgres, despite `REDIS_URL` being set job-wide;
+  every Redis-touching test/e2e step would have failed to connect the
+  moment this workflow ever actually ran.
+- **`payments` module test coverage added**: `tests/payments/providers.test.ts`
+  (`CodPaymentProvider`, `getPaymentProvider` selection,
+  `isOnlinePaymentConfigured`) and `tests/payments/paymob-webhook.test.ts`
+  (`PaymobPaymentProvider.verifyWebhook` against a synthetic, correctly-
+  HMAC'd payload — valid/invalid signatures, missing header, malformed
+  JSON, both success/failure outcomes) — previously zero tests existed
+  for this module at all.
+- **Paymob webhook `merchant_order_id` extraction hardened**: found
+  reading from a different scope (top-level payload) than every other
+  field the same function reads (all nested under `obj`/`obj.order`/
+  `obj.source_data`). Couldn't confirm which is actually correct against
+  Paymob's real API (network egress to Paymob's docs is blocked in this
+  environment) — fixed to check the nested location first with a
+  top-level fallback, so it works either way, rather than assert one
+  with unverified confidence. Still gated on the existing "verify
+  against Paymob's live sandbox before going live" deferred item.
+- Two very minor, lower-priority gaps found by the same audit were
+  **not** fixed this phase (kept the phase scoped to what's completable
+  in one clean pass) — moved to Known Issues/Deferred: a stuck-at-
+  `PENDING` `ListingImage` after exhausted processing retries has no
+  sweep/retry mechanism, and expired `OtpCode`/`Session` rows have no
+  pruning job (unbounded table growth, not a correctness bug).
+
+## Bug Found and Fixed in Phase 15
+
+**A real, live double-sell race condition in checkout — not a
+hypothetical.** `createOrder` (`src/modules/orders/checkout.ts`) read a
+listing with `findFirst({ where: { status: "ACTIVE" } })`, created an
+`Order` row, then wrote `listing.update({ data: { status: "SOLD" } })` —
+a plain, unconditional update with no guard on the listing's status at
+the moment of the write. Two concurrent checkouts on the same listing
+(entirely plausible for a desirable listing — no rate limit or lock
+prevented it) could both pass the initial read, both create their own
+`Order`, and both flip the listing to `SOLD`: two buyers, each believing
+they'd bought the same item, with nothing anywhere noticing. The
+existing comment directly above the write already said "reserve the
+listing immediately so it can't be sold to two buyers at once" — the
+code just never actually enforced that atomically. Confirmed as real
+(not just theoretical) with a regression test that fires two concurrent
+`createOrder` calls at the same listing: against the pre-fix code both
+calls succeeded and two `Order` rows were created; against the fixed
+code exactly one succeeds.
+
+Fixed by reordering the reservation to happen *before* order creation,
+both inside one `prisma.$transaction`, with the reservation done as
+`listing.updateMany({ where: { id, status: "ACTIVE" }, data: { status:
+"SOLD" } })` — the `WHERE status: "ACTIVE"` clause is what actually
+makes this atomic (Postgres serializes concurrent UPDATEs on the same
+row; the loser's WHERE simply stops matching once the winner commits).
+A new `listing_already_sold` checkout error surfaces this to the buyer
+("تم بيع هذا الإعلان لمشترٍ آخر للتو"). `transitionOrder` had the
+identical unguarded-write shape and was fixed the same way (`updateMany`
+guarded on the order's previously-read `status`), which as a side effect
+also makes `recordCompletionFinancials` idempotent against a duplicate
+concurrent "mark COMPLETED" call. See `docs/DECISIONS.md` for the full
+writeup of both fixes and why a transaction (not just a guarded update)
+was needed for the checkout case specifically.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -553,32 +632,42 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 16 migrations applied — this phase added
-  `20260830091324_add_user_email` (`ALTER TABLE "users" ADD COLUMN
-  "email" TEXT` — no index, no unique constraint, no FK; purely additive
-  to an existing table, so no ordering-bug risk). Schema at
+- 16 migrations applied — unchanged this phase (Phase 15 is a pure
+  concurrency/test/CI fix with no schema change). Last migration added:
+  `20260830091324_add_user_email` (Phase 14). Schema at
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
-## Tests & Results (Phase 14, all green)
+## Tests & Results (Phase 15, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
 - `npm run boundaries` — no violations (220 modules, 779 dependencies —
-  +1 module for the new `src/modules/identity/email.ts`).
-- `npm test` — **296/296 unit tests passing** across 36 files. New this
-  phase: `tests/identity/email-normalize.test.ts` (10 — valid/invalid
-  `normalizeEmail` cases), `tests/identity/email.test.ts` (1 — console
-  fallback never leaks subject/text), and 4 new tests in
-  `tests/notifications/notifications.test.ts`'s "createNotification email
-  mirror" block (sends via the email provider when set, skips entirely
-  when unset, still creates the in-app row if the email send throws, an
-  email failure never blocks a concurrent SMS send).
-- `npx playwright test` — **8/8 e2e specs passing**. `e2e/auth-signup.spec.ts`
-  extended (not a new spec) to fill/save the new email field and confirm
-  it persists across a page reload.
+  unchanged; no new `src/` module this phase, only `tests/` additions).
+- `npm test` — **309/309 unit tests passing** across 38 files. New this
+  phase: `tests/payments/providers.test.ts` (4), `tests/payments/paymob-webhook.test.ts`
+  (7), plus one concurrency-regression test each in
+  `tests/orders/checkout.test.ts` and `tests/orders/transitions.test.ts`
+  (fires two concurrent calls at the same listing/order, asserts exactly
+  one wins — both reproducibly failed against the pre-fix code and pass
+  reproducibly now; the checkout race test was also run 5x in isolation
+  to confirm it isn't itself flaky).
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified
+  (`checkout-flow.spec.ts` exercises the reworked `createOrder` on its
+  normal, non-racing path).
 - `npm run build` — clean, warning-free production build; no new routes,
-  `/profile`'s bundle grew slightly for the new form field.
+  `/listings/[id]/checkout`'s bundle grew slightly for the new error
+  message branch.
+- `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
+  sync" (no schema change this phase, so this was a pure sanity check).
+
+### Tests & Results (Phase 14, for reference)
+
+- `npm test` — 296/296 unit tests passing across 36 files
+  (`tests/identity/email-normalize.test.ts` +10,
+  `tests/identity/email.test.ts` +1, 4 new `notifications.test.ts` tests).
+- `npx playwright test` — 8/8 e2e specs passing, `auth-signup.spec.ts` extended.
+- `npm run build` — clean, warning-free; no new routes.
 - `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
   sync" as the final gate, per the standing rule from Phase 13.
 
@@ -639,11 +728,26 @@ runtime bug. Fixed by moving the fallback rate onto
 
 - None. (The `OrderCancelledBy`/`ShippingRate` issues from Phase 5, the
   client-bundle issue from Phase 7, the OTP-logging issue from Phase 8,
-  the `withApiHandler` generic-default issue from Phase 8, and the
-  `getListingById` visibility gap from Phase 10 were all found and fixed
-  within their own development pass, never shipped.)
+  the `withApiHandler` generic-default issue from Phase 8, the
+  `getListingById` visibility gap from Phase 10, and the checkout/
+  order-transition double-write races from Phase 15 were all found and
+  fixed within their own development pass, never shipped.)
 
 ### Deferred (not bugs — explicit scope decisions)
+
+- **A `ListingImage` can get stuck at `PENDING` forever if its processing
+  job exhausts all 3 retry attempts** — no code path marks it permanently
+  failed or re-queues it; from the seller's side, it just never appears,
+  indistinguishable from "still processing." Found in Phase 15's audit,
+  not fixed (low severity, low current likelihood — a transient storage/
+  `sharp` failure). A fix would mirror `listing-expiry`'s existing
+  repeat-job pattern: a periodic sweep that finds `PENDING` images past
+  some age and marks them `REJECTED` or re-queues them.
+- **No pruning job for expired `OtpCode`/`Session` rows** — not a
+  correctness bug (both are already excluded by `expiresAt`/`consumedAt`/
+  `revokedAt` checks in application logic), just unbounded table growth
+  with no operational answer yet. Found in Phase 15's audit alongside the
+  item above; low priority at current scale.
 
 - **Sentry is architecturally complete but inactive** — see "OWNER
   DECISION REQUIRED" below. Every other observability feature (request
@@ -941,6 +1045,40 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   profile surface), not a new page — mirrors the already-shipped `name`
   field's save flow exactly.
 
+## Technical/Architecture Decisions (Phase 15)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `createOrder`'s listing reservation moved from "create order, then
+  update listing" to "atomically reserve the listing, then create the
+  order, both in one transaction" — the reservation's `WHERE status:
+  "ACTIVE"` guard is the actual concurrency control (Postgres serializes
+  concurrent UPDATEs on the same row); the transaction wrapper exists so
+  a failure creating the order can't leave the listing stuck reserved
+  with nothing to show for it.
+- `transitionOrder`'s status write changed from a plain `update` to an
+  `updateMany` guarded on the status actually read — the general fix for
+  read-then-write races on a row whose state gates a real side effect,
+  applied here for order transitions specifically; it also makes
+  `recordCompletionFinancials` idempotent for free, with no separate
+  idempotency key.
+- The Paymob webhook's `merchant_order_id` field is read from two
+  possible locations (nested, then a top-level fallback) rather than
+  asserting one — an honest response to not being able to confirm
+  Paymob's real payload shape from this environment (network egress to
+  their docs is blocked), not a guess presented as fact.
+- `payments` module tests validate `verifyWebhook`'s parsing/HMAC logic
+  against a synthetic, self-computed-HMAC payload — deliberately not a
+  claim that this matches Paymob's real API (that's still gated on live
+  sandbox access), just proof the code does what it says with whatever
+  shape it's given.
+- Two minor findings from this phase's audit (orphaned `PENDING`
+  `ListingImage` rows past retry exhaustion; no `OtpCode`/`Session`
+  pruning job) were deliberately left unfixed and moved to Known
+  Issues/Deferred rather than folded in — neither is a correctness bug,
+  and scope discipline (one phase, completable in one clean pass) beats
+  fixing everything found in a single audit.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -1010,19 +1148,35 @@ None.
 
 ## Exact Next Action
 
-Phase 14 is committed and pushed (both branches kept in sync — see Git
+Phase 15 is committed and pushed (both branches kept in sync — see Git
 Safety in `CLAUDE.md` and this session's owner authorization to merge
 into `main`). Per the standing execution rule (one phase at a time,
 validate, stop for approval), **this session stops here**, awaiting
 direction on what to build next.
 
-Notification delivery is now complete across all three channels
-(in-app, SMS, email — Phases 7/11/14), closing what had been the
-top-priority purely-technical candidate for three phases running.
-Re-deriving honestly rather than assuming a prior session's list still
-holds: **no further purely-technical, owner-decision-free gap was
-identified this session.** Everything remaining in the roadmap is one of:
+**Important precedent from this phase**: the previous session concluded
+"no further purely-technical gap was identified" and explicitly asked
+the next session to re-audit rather than trust that unchecked. This
+session did exactly that and found a real, live double-sell race
+condition in checkout, a matching race in order transitions, a CI
+workflow that could never actually pass (missing Redis service), and a
+completely untested `payments` module — none of which the prior
+Explore-based pass had surfaced. **The lesson: "nothing found" from one
+audit pass is not the same as "nothing exists."** Every future session
+should keep re-auditing with fresh eyes (different angles: security,
+concurrency, test coverage, operational readiness, not just "what's the
+next feature") rather than treating a prior session's clean bill of
+health as durable truth.
 
+Remaining candidates, none of them purely-technical-and-unstarted at
+this point:
+
+- **The two minor Deferred items this phase's audit found but didn't fix**
+  (see Known Issues → Deferred): a `ListingImage` stuck-at-`PENDING`
+  sweep, and an `OtpCode`/`Session` pruning job. Both low severity,
+  genuinely technical, no owner decision needed — the most likely
+  next purely-technical unit of work if nothing higher-priority emerges
+  from a fresh audit.
 - **SMS gateway activation** — purely an owner action (pick a gateway,
   set `SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`); see
   `docs/DECISIONS.md`.
@@ -1039,13 +1193,14 @@ identified this session.** Everything remaining in the roadmap is one of:
   approval before going `ACTIVE`, vs. today's report-driven
   `FLAG_FOR_REVIEW`) — a genuine product/velocity trade-off, flagged as a
   possible **OWNER DECISION REQUIRED** in Known Issues; not started.
-- A Deferred item from Phase 5 (wiring real Paymob credentials once the
-  owner has them, verifying the integration against Paymob's live
-  sandbox).
+- **Verifying the Paymob integration against a real sandbox** (Deferred
+  since Phase 5, sharpened this phase — the `merchant_order_id`
+  extraction now has a defensive fallback, but which of its two checked
+  locations Paymob's real API actually uses is still unconfirmed) — needs
+  owner-supplied credentials.
 
 A future session should re-run its own OODA audit (CLAUDE.md Section 4)
-rather than trust this list unchecked — new gaps may surface as the app
-gets real usage, and this session's own read was necessarily scoped to
-what an Explore pass could surface, not exhaustive. Read this file +
+from a fresh angle rather than just re-scan this list — this phase is
+direct proof that doing so finds real things. Read this file +
 `docs/*` fresh at the start of that session and confirm current git
 state matches this document before writing any code.

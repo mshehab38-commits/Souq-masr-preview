@@ -23,7 +23,8 @@ export type CheckoutResult =
         | "price_not_set"
         | "shipping_company_required"
         | "shipping_rate_unavailable"
-        | "payment_method_unavailable";
+        | "payment_method_unavailable"
+        | "listing_already_sold";
     };
 
 // Every money field on the resulting Order is snapshotted here, at
@@ -64,28 +65,44 @@ export async function createOrder(buyerId: string, input: CheckoutInput): Promis
 
   const totalAmount = productPrice + (shippingFee ?? 0);
 
-  const order = await prisma.order.create({
-    data: {
-      buyerId,
-      sellerId: listing.ownerId,
-      listingId: listing.id,
-      fulfillmentMode: listing.fulfillmentMode as FulfillmentMode,
-      productPrice,
-      currency: listing.currency,
-      shippingCompanyId,
-      shippingFee,
-      shippingCommissionAmount,
-      totalAmount,
-      paymentMethod,
-      shippingAddress: input.shippingAddress as never,
-      buyerNote: input.buyerNote,
-    },
+  // Reserve the listing and create the order atomically, in one
+  // transaction: the updateMany's `status: "ACTIVE"` guard is the actual
+  // concurrency control — two simultaneous checkouts on the same listing
+  // can both pass the findFirst check above, but only one can win this
+  // conditional update (Postgres serializes concurrent UPDATEs on the
+  // same row; the second one's WHERE no longer matches once the first
+  // commits). Wrapping the reservation and the order.create in the same
+  // transaction means a failure creating the order (rare, but possible)
+  // rolls the reservation back too, rather than leaving the listing
+  // stuck at SOLD with no order to show for it. Reversed back to ACTIVE
+  // if this order is later cancelled (see transitions.ts).
+  const order = await prisma.$transaction(async (tx) => {
+    const reservation = await tx.listing.updateMany({
+      where: { id: listing.id, status: "ACTIVE" },
+      data: { status: "SOLD" },
+    });
+    if (reservation.count === 0) return null;
+
+    return tx.order.create({
+      data: {
+        buyerId,
+        sellerId: listing.ownerId,
+        listingId: listing.id,
+        fulfillmentMode: listing.fulfillmentMode as FulfillmentMode,
+        productPrice,
+        currency: listing.currency,
+        shippingCompanyId,
+        shippingFee,
+        shippingCommissionAmount,
+        totalAmount,
+        paymentMethod,
+        shippingAddress: input.shippingAddress as never,
+        buyerNote: input.buyerNote,
+      },
+    });
   });
 
-  // Reserve the listing immediately so it can't be sold to two buyers at
-  // once — reversed back to ACTIVE if this order is later cancelled (see
-  // transitions.ts).
-  await prisma.listing.update({ where: { id: listing.id }, data: { status: "SOLD" } });
+  if (!order) return { success: false, error: "listing_already_sold" };
 
   const payment = await getPaymentProvider(paymentMethod).createPayment({
     orderId: order.id,

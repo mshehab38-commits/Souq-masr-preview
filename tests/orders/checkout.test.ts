@@ -193,6 +193,45 @@ describe("createOrder", () => {
     expect(order.shippingCompanyId).toBe(company.id);
   });
 
+  it("under two concurrent checkouts on the same listing, exactly one wins and the other is told it's already sold", async () => {
+    const seller = await makeUser();
+    const buyerA = await makeUser();
+    const buyerB = await makeUser();
+    const category = await makeCategory();
+    const listing = await makeListing(seller.id, category.id);
+
+    const [resultA, resultB] = await Promise.all([
+      createOrder(buyerA.id, { listingId: listing.id }),
+      createOrder(buyerB.id, { listingId: listing.id }),
+    ]);
+
+    // Depending on exactly how the two concurrent calls interleave, the
+    // loser is caught either by the initial findFirst (if it runs after
+    // the winner's transaction has already committed — "listing_not_found",
+    // since the ACTIVE-only findFirst no longer matches) or by the atomic
+    // reservation inside the transaction itself ("listing_already_sold").
+    // Both correctly prevent a double sale — that invariant (exactly one
+    // order, listing ends up SOLD) is what the assertions below actually
+    // verify; which specific error the loser sees is a timing detail, not
+    // the thing this test is protecting against a regression of.
+    const results = [resultA, resultB];
+    const wins = results.filter((r) => r.success);
+    const losses = results.filter((r) => !r.success);
+    expect(wins).toHaveLength(1);
+    expect(losses).toHaveLength(1);
+    const loss = losses[0]!;
+    expect(loss).toMatchObject({ success: false });
+    if (!loss.success) {
+      expect(["listing_already_sold", "listing_not_found"]).toContain(loss.error);
+    }
+
+    const orderCount = await prisma.order.count({ where: { listingId: listing.id } });
+    expect(orderCount).toBe(1);
+
+    const finalListing = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+    expect(finalListing.status).toBe("SOLD");
+  });
+
   it("never treats the product price as platform revenue — no ledger entry references this order at checkout", async () => {
     const seller = await makeUser();
     const buyer = await makeUser();

@@ -149,9 +149,22 @@ export class PaymobPaymentProvider implements PaymentProvider {
 
     if (computedHmac !== providedHmac) return { valid: false };
 
+    // Every other field this function reads comes from obj/obj.order/
+    // obj.source_data (never the top level) — merchant_order_id is the
+    // one exception, and which shape is actually correct couldn't be
+    // confirmed without live sandbox access (see the class-level comment
+    // above: this integration has never been exercised against Paymob's
+    // real API). Checking the nested location first, with a top-level
+    // fallback, means this keeps working regardless of which shape
+    // Paymob's real payload turns out to use — verify against the
+    // sandbox before going live and simplify to whichever one is real.
+    const orderId =
+      (orderObj as { merchant_order_id?: string }).merchant_order_id ??
+      (payload as { merchant_order_id?: string }).merchant_order_id;
+
     return {
       valid: true,
-      orderId: (payload as { merchant_order_id?: string }).merchant_order_id,
+      orderId,
       status: obj.success ? "CAPTURED" : "FAILED",
     };
   }

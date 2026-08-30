@@ -23,6 +23,22 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # Every test suite connects to a real Redis (OTP/report rate
+      # limiting, session-adjacent flows, BullMQ-backed jobs exercised by
+      # e2e) — without this service, `npm test`/`npm run e2e` would fail
+      # to connect the moment they touch anything Redis-backed, exactly
+      # as this workflow had never actually caught (per the repo's own
+      # note that this workflow has never triggered yet). Mirrors
+      # docker-compose.yml's redis image.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
       DATABASE_URL: postgresql://souqmasr:souqmasr_dev_pw@localhost:5432/souqmasr?schema=public
