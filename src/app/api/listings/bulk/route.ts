@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { assertCsrf, getCurrentUser } from "@/modules/identity/service";
-import { bulkUpdateListings } from "@/modules/catalog/service";
+import { bulkUpdateListings, checkBulkActionRateLimit } from "@/modules/catalog/service";
 import { recordAudit } from "@/lib/audit";
 import { withApiHandler } from "@/lib/api-handler";
 
@@ -24,6 +24,11 @@ export const POST = withApiHandler(async (request: Request) => {
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
+  }
+
+  const allowed = await checkBulkActionRateLimit(user.id);
+  if (!allowed) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
 
   const result = await bulkUpdateListings(user.id, parsed.data.listingIds, parsed.data.action);

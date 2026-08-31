@@ -34,7 +34,7 @@ export const POST = withApiHandler(async (request: Request) => {
 
   const result = await createListing(user.id, parsed.data);
   if (!result.success) {
-    return NextResponse.json(result, { status: 422 });
+    return NextResponse.json(result, { status: result.error === "rate_limited" ? 429 : 422 });
   }
 
   await recordAudit({
