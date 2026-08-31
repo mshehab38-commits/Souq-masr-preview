@@ -1468,3 +1468,52 @@ the code (not trusted from doc comments):
   gap this phase closes, and not the highest-value item found this
   round. `admin.verification.approve`/`reject`'s metadata also doesn't
   mirror the reviewer's `notes` text — same reasoning, deferred.
+
+## Phase 24: two more fresh audits (CSRF coverage, frontend authorization leaks) — both fully clean, the second consecutive clean round this session
+
+Continuing the same precedent, the two remaining candidates named in
+Phase 23's Exact Next Action were audited exhaustively (not
+spot-checked):
+
+- **CSRF coverage**, across all 40 `route.ts` files under
+  `src/app/api/**` with a mutating handler, not just a sample. 37
+  correctly call `assertCsrf(request)`; the 3 that don't are each
+  legitimately exempt (Paymob's HMAC-authenticated webhook; the OTP
+  request/verify endpoints, which run before a session — and its CSRF
+  cookie — exists, an inherent exemption for login endpoints under a
+  double-submit scheme; and the dev-only local-storage stub, which has
+  no session auth at all and is hard-disabled in production). No gap.
+- **Frontend authorization-assumption leaks**: every admin page either
+  does its own explicit `requireAdmin()`/`requireModerator()` check
+  server-side, is covered by the shared layout's server-side
+  `requireModerator()` gate (which runs ahead of any child render) plus
+  independently-gated API routes, or both. Every client-side role check
+  that only drives button visibility is backed by an equivalent
+  server-side check on the actual mutating route. Every Server
+  Component sends a Prisma-`select`-scoped projection to its client
+  component, never a full row gated only by a client-side conditional.
+  No gap.
+
+This is the **second consecutive fully-clean audit round** this
+session (the first being background-job idempotency + Paymob webhook
+duplicate-processing, part of Phase 22's audit set) — a different
+signal than Phases 15-23, where nearly every fresh angle found
+something real. Recorded as a deliberate inflection point in
+`PROJECT_STATE.md`'s Exact Next Action: the project's own history means
+this is not proof nothing remains, but it is evidence that the most
+obviously-exploitable security-shaped technical gaps (auth, IDOR, CSRF,
+session/cookie handling, rate limiting, races, audit-trail
+completeness, N+1s, frontend leaks) are largely closed, and a future
+session's next unit of work may more likely be a product feature than
+another security audit angle — though a fresh audit should still open
+every session, per CLAUDE.md Section 1.
+
+One trivial, non-blocking nit was found and deliberately not fixed:
+`getUserDetail()` (`src/modules/identity/admin-users.ts`) does an
+unscoped `prisma.user.findUnique`, serializing a few extra
+low-sensitivity fields (`email`, `phoneVerifiedAt`, `deletedAt`,
+`updatedAt`) into the admin user-detail API response beyond what
+`UserDetail.tsx` reads. Data-minimization hygiene, not an authorization
+gap — the endpoint is already correctly restricted to moderators/
+admins. Not worth a dedicated validate/commit/merge cycle on its own;
+deferred to whenever that file is next touched for another reason.
