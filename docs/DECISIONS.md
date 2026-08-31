@@ -931,3 +931,85 @@ the same algorithm `verifyWebhook()` itself uses, so the test is
 independent of ever having real Paymob credentials — it validates the
 parsing/verification *logic*, not the *real API shape* (that half stays
 gated on live sandbox access, per the existing deferred item).
+
+## Stuck `ListingImage`/expired auth rows get a sweep job, mirroring `listing-expiry`'s exact pattern
+
+Phase 16's re-audit (per Phase 15's own instruction to keep re-auditing
+rather than trust a prior "nothing left" conclusion) found two real,
+previously-flagged-but-unfixed gaps: `processListingImage` has no
+`catch` block at all, so a thrown error (a storage failure, `sharp()`
+throwing on a corrupt file) exhausts BullMQ's 3 retries and marks the
+*job* failed without ever touching `ListingImage.status` — it stays
+`PENDING` forever, indistinguishable from "still processing" since every
+listing/store/search query filters to `status: "READY"`. Separately,
+neither `OtpCode` nor `Session` is ever filtered by expiry at the query
+level (`verifyOtp`/`getSessionUser` fetch then reject in application
+code), so both grow unbounded.
+
+Both are fixed with a new repeatable BullMQ job each
+(`src/jobs/listing-image-sweep.ts`, `src/jobs/auth-row-pruning.ts`),
+copying `listing-expiry.ts`'s exact shape rather than inventing a new
+pattern: a plain `updateMany`/`deleteMany` sweep function, a dedicated
+queue, and a worker registered via `queue.add()` with a fixed `jobId` +
+`repeat` option (BullMQ dedupes on that combination, so safe to
+re-register on every worker restart). Two deliberate choices worth
+recording: (1) a stuck `ListingImage` is marked `REJECTED`, not
+re-queued — `REJECTED` is already the terminal state a synchronously-
+detected bad file uses, so this needs no schema change and matches the
+existing seller-facing "re-upload" UX; re-queuing indefinitely would
+risk infinite retries on a permanently-broken file. (2) expired auth
+rows are hard-deleted, not moved to a terminal status — unlike
+`Listing`/`ListingImage`, nothing reads an expired `OtpCode`/`Session`
+for history (`recordAudit` logs auth events separately, with no FK to
+`Session`), so there's no soft-fail state worth preserving. Both run
+hourly (vs. `listing-expiry`'s 15 minutes) since neither has a
+user-facing correctness dependency, only table-bloat/UX-staleness to
+bound.
+
+## Listing-image uploads get a size limit, checked before the buffer is loaded
+
+The same Phase 16 audit found a real memory-exhaustion vector:
+`requestImageUploadTarget` only validates `contentType`, never size, and
+`processListingImage` loads the **entire original into memory as a
+Buffer** and runs `sharp()` on it 3× (once per variant) at worker
+concurrency 4 — an arbitrarily large upload is a real DoS surface, with
+nothing bounding it. `src/modules/store/branding.ts` has had an
+equivalent `MAX_UPLOAD_BYTES` check since Phase 4; listing images never
+got one. Fixed by adding `getObjectSize(key)` to the `StorageProvider`
+interface (`HeadObjectCommand` for R2, `stat().size` for local) and
+checking it in `processListingImage` **before** ever calling
+`getObject()` — checking after would already have paid the memory cost
+of loading the oversized buffer, which is the actual vector being
+closed. An oversized original is marked `REJECTED`, the same terminal
+state a bad-magic-byte file already uses. The limit is 15 MB (vs.
+branding's 8 MB) — generous enough for a real phone-camera photo while
+still bounding worst-case per-job memory use; a technical default, not
+a product decision. This intentionally stops short of a presigned-POST-
+with-conditions upload flow (which would also bound the client-to-R2
+PUT itself) — that's a materially bigger change to the upload flow for
+marginal additional protection once the worker-side check exists.
+
+## `createListing`'s active-listing-limit race needed a different fix than checkout's
+
+Phase 15 fixed two read-then-write races (checkout's listing
+reservation, order transitions) with the same pattern: an `updateMany`
+guarded on the row's previously-read status. Phase 16's audit found a
+third, real race of a different shape: `createListing` did a plain
+`prisma.listing.count()` then a separate `prisma.listing.create()`, with
+no transaction between them — two concurrent creates from the same
+seller could both read a count below their plan's limit before either
+committed, letting a seller exceed their cap. This is a count-then-
+create race against an *aggregate*, not a single row's state
+transition, so the `updateMany`-guard pattern doesn't apply — there's no
+single row whose `WHERE` clause can capture "the count across all this
+owner's rows hasn't changed." Fixed instead by wrapping the count check
+and the `create` in one `prisma.$transaction` under `Serializable`
+isolation, which makes Postgres itself detect a conflicting concurrent
+transaction (error `40001`, surfaced by Prisma as `P2034`) rather than
+trusting an application-level guard, with a single retry on that
+specific error — the standard, sufficient handling for a conflict
+that's expected to be rare. Lower stakes than checkout's fix (a seller
+temporarily has one extra active listing, not a lost sale), but the
+same bug class, left unfixed would have been inconsistent with Phase
+15's own conclusion that this class of bug is worth taking seriously
+everywhere it appears, not just in the highest-profile instance.

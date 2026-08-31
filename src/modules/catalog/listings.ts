@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
-import type { FulfillmentMode, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { FulfillmentMode } from "@prisma/client";
 import { searchIndexQueue } from "@/jobs/queues";
 import { resolveActiveListingLimit } from "@/modules/subscriptions/service";
 import { resolveCommerceEligibility } from "./commerceEligibility";
@@ -34,20 +35,6 @@ export async function createListing(
   ownerId: string,
   input: ListingInput,
 ): Promise<CreateListingResult> {
-  // Fails OPEN when unconfigured: resolveActiveListingLimit() returns null
-  // both when the owner hasn't set a free-tier cap yet AND when the
-  // seller's plan grants unlimited listings — either way, no cap is
-  // enforced rather than inventing one. See docs/DECISIONS.md.
-  const limit = await resolveActiveListingLimit(ownerId);
-  if (limit !== null) {
-    const activeCount = await prisma.listing.count({
-      where: { ownerId, status: "ACTIVE", deletedAt: null },
-    });
-    if (activeCount >= limit) {
-      return { success: false, error: "listing_limit_reached", limit };
-    }
-  }
-
   const attributeResult = await validateListingAttributes(input.categoryId, input.attributes);
   if (!attributeResult.success) {
     return { success: false, error: "invalid_attributes", details: attributeResult.errors ?? [] };
@@ -68,32 +55,101 @@ export async function createListing(
     fulfillmentMode = input.fulfillmentMode;
   }
 
-  // Publishes straight to ACTIVE — this phase's pre-publish review queue
-  // (flagListingForReview/decidePendingListing below) is moderator-initiated
-  // off a report, not a mandatory gate on every new listing.
-  const listing = await prisma.listing.create({
-    data: {
-      ownerId,
-      categoryId: input.categoryId,
-      title: input.title,
-      description: input.description,
-      price: input.price,
-      negotiable: input.negotiable ?? false,
-      governorateId: input.governorateId,
-      cityId: input.cityId,
-      attributes: attributeResult.data as Prisma.InputJsonValue,
-      commerceEnabled,
-      fulfillmentMode,
-      status: "ACTIVE",
-      expiresAt: new Date(Date.now() + LISTING_LIFETIME_MS),
+  const result = await createListingRowAtomically(
+    ownerId,
+    input,
+    attributeResult.data as Prisma.InputJsonValue,
+    commerceEnabled,
+    fulfillmentMode,
+  );
+
+  if (result.success) {
+    // Search indexing is queued, never computed inline on save — the
+    // PostgresSearchProvider's index() fills in searchText asynchronously.
+    // Enqueued after the transaction commits, never inside it (BullMQ is
+    // not part of the Postgres transaction).
+    await searchIndexQueue.add("index", { listingId: result.listingId });
+  }
+
+  return result;
+}
+
+// The active-listing-limit check is a count-then-create against an
+// aggregate, not a single row's state transition — the
+// updateMany-with-WHERE-guard pattern used elsewhere in this codebase for
+// read-then-write races (checkout's listing reservation, order
+// transitions) doesn't apply to an aggregate count. Serializable
+// isolation makes Postgres itself detect a conflicting concurrent
+// transaction (error 40001, surfaced by Prisma as P2034) rather than
+// trusting an application-level guard; a single retry is standard,
+// sufficient handling for an expected-to-be-rare conflict. See
+// docs/DECISIONS.md.
+async function createListingRowAtomically(
+  ownerId: string,
+  input: ListingInput,
+  attributes: Prisma.InputJsonValue,
+  commerceEnabled: boolean,
+  fulfillmentMode: FulfillmentMode | null,
+): Promise<CreateListingResult> {
+  try {
+    return await attemptCreateListingRow(ownerId, input, attributes, commerceEnabled, fulfillmentMode);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+      return attemptCreateListingRow(ownerId, input, attributes, commerceEnabled, fulfillmentMode);
+    }
+    throw error;
+  }
+}
+
+async function attemptCreateListingRow(
+  ownerId: string,
+  input: ListingInput,
+  attributes: Prisma.InputJsonValue,
+  commerceEnabled: boolean,
+  fulfillmentMode: FulfillmentMode | null,
+): Promise<CreateListingResult> {
+  return prisma.$transaction(
+    async (tx): Promise<CreateListingResult> => {
+      // Fails OPEN when unconfigured: resolveActiveListingLimit() returns
+      // null both when the owner hasn't set a free-tier cap yet AND when
+      // the seller's plan grants unlimited listings — either way, no cap
+      // is enforced rather than inventing one. See docs/DECISIONS.md.
+      const limit = await resolveActiveListingLimit(ownerId);
+      if (limit !== null) {
+        const activeCount = await tx.listing.count({
+          where: { ownerId, status: "ACTIVE", deletedAt: null },
+        });
+        if (activeCount >= limit) {
+          return { success: false, error: "listing_limit_reached", limit };
+        }
+      }
+
+      // Publishes straight to ACTIVE — this phase's pre-publish review
+      // queue (flagListingForReview/decidePendingListing below) is
+      // moderator-initiated off a report, not a mandatory gate on every
+      // new listing.
+      const listing = await tx.listing.create({
+        data: {
+          ownerId,
+          categoryId: input.categoryId,
+          title: input.title,
+          description: input.description,
+          price: input.price,
+          negotiable: input.negotiable ?? false,
+          governorateId: input.governorateId,
+          cityId: input.cityId,
+          attributes,
+          commerceEnabled,
+          fulfillmentMode,
+          status: "ACTIVE",
+          expiresAt: new Date(Date.now() + LISTING_LIFETIME_MS),
+        },
+      });
+
+      return { success: true, listingId: listing.id };
     },
-  });
-
-  // Search indexing is queued, never computed inline on save — the
-  // PostgresSearchProvider's index() fills in searchText asynchronously.
-  await searchIndexQueue.add("index", { listingId: listing.id });
-
-  return { success: true, listingId: listing.id };
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
 }
 
 export type UpdateListingResult =

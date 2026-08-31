@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, unlink, stat } from "node:fs/promises";
 import path from "node:path";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
@@ -35,6 +35,11 @@ export class LocalStorageProvider implements StorageProvider {
 
   async getObject(key: string): Promise<Buffer> {
     return readFile(resolveSafePath(key));
+  }
+
+  async getObjectSize(key: string): Promise<number> {
+    const stats = await stat(resolveSafePath(key));
+    return stats.size;
   }
 
   getPublicUrl(key: string): string {

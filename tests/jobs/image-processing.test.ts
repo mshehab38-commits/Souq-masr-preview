@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { detectImageMime } from "@/jobs/image-processing";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { detectImageMime, processListingImage } from "@/jobs/image-processing";
+import { prisma } from "@/lib/db";
+import { getStorageProvider } from "@/lib/storage";
 
 describe("detectImageMime", () => {
   it("recognizes a JPEG signature", () => {
@@ -28,5 +30,52 @@ describe("detectImageMime", () => {
 
   it("rejects an empty buffer", () => {
     expect(detectImageMime(Buffer.alloc(0))).toBeNull();
+  });
+});
+
+describe("processListingImage", () => {
+  const createdUserIds: string[] = [];
+  const createdCategoryIds: string[] = [];
+  const createdListingIds: string[] = [];
+
+  afterEach(async () => {
+    await prisma.listingImage.deleteMany({ where: { listingId: { in: createdListingIds } } });
+    await prisma.listing.deleteMany({ where: { id: { in: createdListingIds } } });
+    await prisma.category.deleteMany({ where: { id: { in: createdCategoryIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    createdUserIds.length = 0;
+    createdCategoryIds.length = 0;
+    createdListingIds.length = 0;
+  });
+
+  it("rejects an oversized upload without ever loading it into memory", async () => {
+    const owner = await prisma.user.create({
+      data: { phone: `+2010${Math.floor(10_000_000 + Math.random() * 89_999_999)}` },
+    });
+    createdUserIds.push(owner.id);
+    const category = await prisma.category.create({
+      data: { slug: `img-size-${Math.random().toString(36).slice(2)}`, nameAr: "قسم", nameEn: "Category" },
+    });
+    createdCategoryIds.push(category.id);
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "إعلان" },
+    });
+    createdListingIds.push(listing.id);
+    const image = await prisma.listingImage.create({
+      data: { listingId: listing.id, originalKey: `listings/${listing.id}/original.jpg` },
+    });
+
+    const storage = getStorageProvider();
+    const sizeSpy = vi.spyOn(storage, "getObjectSize").mockResolvedValueOnce(16 * 1024 * 1024);
+    const getObjectSpy = vi.spyOn(storage, "getObject");
+
+    await processListingImage({ listingImageId: image.id, originalKey: image.originalKey });
+
+    expect(getObjectSpy).not.toHaveBeenCalled();
+    const updated = await prisma.listingImage.findUniqueOrThrow({ where: { id: image.id } });
+    expect(updated.status).toBe("REJECTED");
+
+    sizeSpy.mockRestore();
+    getObjectSpy.mockRestore();
   });
 });

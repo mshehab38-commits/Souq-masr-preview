@@ -142,12 +142,18 @@ sync" as the only acceptable result.**
 - **`OtpCode`** — keyed by `phone`, not `userId`: a code can be requested
   before any `User` row exists, since first-time OTP verification is also
   registration. Only a hash (`codeHash`, mixed with `OTP_PEPPER`) is
-  stored, never the plaintext code.
+  stored, never the plaintext code. Expired rows are excluded at the
+  application layer (`verifyOtp` fetches then rejects), not at query
+  time — since Phase 16, an hourly `auth-row-prune` job (`src/jobs/
+  auth-row-pruning.ts`) `deleteMany`s rows past `expiresAt` so the table
+  doesn't grow unbounded.
 - **`Session`** — opaque server-revocable tokens; only `tokenHash`
   (SHA-256) is stored, so a database read alone can never yield a usable
   session token. Not JWT — deliberately, so a session can be revoked
   server-side instantly (logout, ban, password/phone change) without
-  needing a token blocklist.
+  needing a token blocklist. Same Phase-16 pruning job also deletes
+  expired `Session` rows — nothing reads them for history once expired
+  (`recordAudit` logs auth events separately, with no FK to `Session`).
 - **`VerificationRequest`** — individual/business seller verification
   submissions. Review UI lands in Phase 10 (Admin); the submission path
   exists from Phase 2 so the data model doesn't need to change later.
@@ -190,8 +196,15 @@ sync" as the only acceptable result.**
   re-indexing step needed.
 - **`ListingImage`** — one row per uploaded image. Created in `PENDING`
   status pointing at the just-uploaded `originalKey`; the image-processing
-  worker fills in `thumbnailUrl`/`mediumUrl`/`fullUrl` and flips status to
-  `READY` (or `REJECTED` on invalid/corrupt input) asynchronously.
+  worker rejects anything over 15 MB before loading it into memory
+  (Phase 16), then fills in `thumbnailUrl`/`mediumUrl`/`fullUrl` and flips
+  status to `READY` (or `REJECTED` on invalid/corrupt/oversized input)
+  asynchronously. `processListingImage` has no `catch` block, so an
+  unexpected error (storage failure, `sharp()` throwing) exhausts
+  BullMQ's retries without ever touching this row — an hourly
+  `listing-image-sweep` job (Phase 16, `src/jobs/listing-image-sweep.ts`)
+  is the backstop, flipping anything still `PENDING` past 1 hour old to
+  `REJECTED`.
 - **`Favorite`** — unique on `(userId, listingId)`.
 - **`SavedSearch`** — `query` is a `Json` blob of `RawSearchParams` (the
   slug-based raw params, e.g. `{ q, category, governorate, city,
