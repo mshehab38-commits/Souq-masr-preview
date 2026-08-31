@@ -2,6 +2,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -52,6 +53,13 @@ export class R2StorageProvider implements StorageProvider {
     const bytes = await result.Body?.transformToByteArray();
     if (!bytes) throw new Error(`Object not found: ${key}`);
     return Buffer.from(bytes);
+  }
+
+  async getObjectSize(key: string): Promise<number> {
+    const result = await this.client.send(
+      new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
+    );
+    return result.ContentLength ?? 0;
   }
 
   getPublicUrl(key: string): string {

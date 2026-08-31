@@ -7,15 +7,15 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-30 (Phase 15 completion)
+Last updated: 2026-08-31 (Phase 16 completion)
 
 ## Current Status
 
-**Phase 15 (Concurrency-safety hardening: a real double-sell race in
-checkout closed, a matching race in order transitions closed, a missing
-Redis service in CI fixed, and test coverage added for the previously
-untested `payments` module) is COMPLETE, validated, committed, and
-pushed.**
+**Phase 16 (Cleanup jobs + upload/listing-limit hardening: a sweep job
+for `ListingImage`s stuck at `PENDING`, an hourly prune job for expired
+`OtpCode`/`Session` rows, a 15 MB upload-size limit closing a real
+memory-exhaustion vector, and a `createListing` active-listing-limit
+race fixed) is COMPLETE, validated, committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -65,8 +65,9 @@ tasks to be framed across disciplines).
 | 12 | Saved-search alerts: CRUD + match-and-notify pipeline, migration-ordering bug fix | `0f5242b`, `492e876` | Done |
 | 13 | Saved-search notification dedup, second migration-ordering bug fix | `ff69c0d` | Done |
 | 14 | Email notification delivery: `EmailProvider` abstraction, optional `User.email` profile field, concurrent SMS+email dispatch | `d201c59` | Done |
-| 15 | Concurrency-safety hardening: checkout double-sell race fixed, order-transition race fixed, CI missing Redis service fixed, `payments` module test coverage added | this session | **Done** |
-| 16 | Remaining roadmap items (see Deferred below) | — | Not started |
+| 15 | Concurrency-safety hardening: checkout double-sell race fixed, order-transition race fixed, CI missing Redis service fixed, `payments` module test coverage added | `5397d89` | Done |
+| 16 | Cleanup jobs + hardening: `ListingImage` sweep, `OtpCode`/`Session` pruning, upload size limit, `createListing` limit race fixed | this session | **Done** |
+| 17 | Remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -602,6 +603,57 @@ concurrent "mark COMPLETED" call. See `docs/DECISIONS.md` for the full
 writeup of both fixes and why a transaction (not just a guarded update)
 was needed for the checkout case specifically.
 
+## What Was Completed in Phase 16
+
+A fresh audit (per Phase 15's own instruction to re-audit rather than
+trust a "nothing left" conclusion unchecked) covered two things: a deep
+dive into the two items Phase 15 already flagged as top candidates, and
+a from-scratch pass over angles not yet checked (upload limits,
+pagination, other read-then-write races, money precision, session/cookie
+security). Four genuine, purely-technical, owner-decision-free gaps came
+out of it, all fixed this phase:
+
+- **`ListingImage` stuck-at-`PENDING` sweep**: `processListingImage`
+  (`src/jobs/image-processing.ts`) has no `catch` block — any thrown
+  error exhausts BullMQ's 3 retries and marks the *job* failed without
+  ever touching `ListingImage.status`, leaving it `PENDING` forever
+  (indistinguishable from "still processing"). New hourly repeatable job
+  (`src/jobs/listing-image-sweep.ts`, wired into `queues.ts`/`workers.ts`/
+  `worker.ts`, mirroring `listing-expiry.ts`'s exact pattern) flips
+  anything still `PENDING` past 1 hour old to `REJECTED`.
+- **`OtpCode`/`Session` pruning**: neither table was ever filtered by
+  expiry at the query level — both grow unbounded (confirmed live during
+  this phase's own test run: 274 stale `OtpCode` rows had accumulated in
+  the dev database from this session's own prior test runs alone). New
+  hourly repeatable job (`src/jobs/auth-row-pruning.ts`) `deleteMany`s
+  rows past `expiresAt`.
+- **Listing-image upload size limit**: `requestImageUploadTarget` only
+  validated `contentType`, never size; `processListingImage` loaded the
+  entire original into memory and ran `sharp()` on it 3× at worker
+  concurrency 4 — a real memory-exhaustion vector, inconsistent with
+  `branding.ts`'s equivalent `MAX_UPLOAD_BYTES` check (existing since
+  Phase 4). Fixed by adding `getObjectSize(key)` to the `StorageProvider`
+  interface (`HeadObjectCommand` for R2, `stat().size` for local) and
+  checking it **before** ever calling `getObject()` — rejecting (as
+  `REJECTED`) anything over 15 MB without loading it into memory.
+- **`createListing`'s active-listing-limit race fixed**: a plain
+  count-then-create with no transaction between them let two concurrent
+  requests from the same seller both read a count below their plan's
+  limit before either committed — the same bug class Phase 15 fixed
+  twice elsewhere (checkout, order transitions), left unfixed here.
+  Fixed differently than those two: this is a count-then-create race
+  against an aggregate, not a single row's state transition, so the
+  `updateMany`-guard pattern doesn't apply. Wrapped the count check and
+  `create` in one `prisma.$transaction` under `Serializable` isolation
+  (Postgres detects the conflict itself, surfaced by Prisma as `P2034`),
+  with a single retry on that error.
+- Two more findings from the same audit were investigated and
+  deliberately **not** fixed this phase — moved to Known Issues/Deferred:
+  three unbounded (unpaginated) list queries (`listOrdersForBuyer`/
+  `listOrdersForSeller`/`listListingsByOwner`), and a pre-existing,
+  systemic `toFixed(2)` money-rounding pattern in
+  `src/modules/shipping/commission.ts`.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -632,34 +684,40 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 16 migrations applied — unchanged this phase (Phase 15 is a pure
-  concurrency/test/CI fix with no schema change). Last migration added:
+- 16 migrations applied — unchanged this phase (Phase 16 is a pure
+  cleanup-job/hardening fix with no schema change). Last migration added:
   `20260830091324_add_user_email` (Phase 14). Schema at
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
-## Tests & Results (Phase 15, all green)
+## Tests & Results (Phase 16, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (220 modules, 779 dependencies —
-  unchanged; no new `src/` module this phase, only `tests/` additions).
-- `npm test` — **309/309 unit tests passing** across 38 files. New this
-  phase: `tests/payments/providers.test.ts` (4), `tests/payments/paymob-webhook.test.ts`
-  (7), plus one concurrency-regression test each in
-  `tests/orders/checkout.test.ts` and `tests/orders/transitions.test.ts`
-  (fires two concurrent calls at the same listing/order, asserts exactly
-  one wins — both reproducibly failed against the pre-fix code and pass
-  reproducibly now; the checkout race test was also run 5x in isolation
-  to confirm it isn't itself flaky).
-- `npx playwright test` — **8/8 e2e specs passing**, all unmodified
-  (`checkout-flow.spec.ts` exercises the reworked `createOrder` on its
-  normal, non-racing path).
-- `npm run build` — clean, warning-free production build; no new routes,
-  `/listings/[id]/checkout`'s bundle grew slightly for the new error
-  message branch.
+- `npm run boundaries` — no violations (222 modules, 786 dependencies —
+  +2 for the new `src/jobs/listing-image-sweep.ts`/`auth-row-pruning.ts`).
+- `npm test` — **318/318 unit tests passing** across 41 files. New this
+  phase: `tests/jobs/listing-image-sweep.test.ts` (3),
+  `tests/jobs/auth-row-pruning.test.ts` (2), one new test in
+  `tests/jobs/image-processing.test.ts` (oversized-upload rejection,
+  asserting `getObject` is never called), and new
+  `tests/catalog/listings.test.ts` (3 — `createListing` had zero prior
+  unit test coverage; happy path, limit rejection, and a concurrency
+  regression test mirroring Phase 15's checkout race test, run 5x in
+  isolation to confirm non-flaky).
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified.
+- `npm run build` — clean, warning-free production build; no new routes.
 - `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
   sync" (no schema change this phase, so this was a pure sanity check).
+
+### Tests & Results (Phase 15, for reference)
+
+- `npm test` — 309/309 unit tests passing across 38 files
+  (`tests/payments/providers.test.ts` +4, `tests/payments/paymob-webhook.test.ts`
+  +7, plus one concurrency-regression test each in `checkout.test.ts`/
+  `transitions.test.ts`).
+- `npx playwright test` — 8/8 e2e specs passing, all unmodified.
+- `npm run build` — clean, warning-free, no new routes.
 
 ### Tests & Results (Phase 14, for reference)
 
@@ -729,25 +787,38 @@ runtime bug. Fixed by moving the fallback rate onto
 - None. (The `OrderCancelledBy`/`ShippingRate` issues from Phase 5, the
   client-bundle issue from Phase 7, the OTP-logging issue from Phase 8,
   the `withApiHandler` generic-default issue from Phase 8, the
-  `getListingById` visibility gap from Phase 10, and the checkout/
-  order-transition double-write races from Phase 15 were all found and
-  fixed within their own development pass, never shipped.)
+  `getListingById` visibility gap from Phase 10, the checkout/
+  order-transition double-write races from Phase 15, and the
+  `createListing` count-then-create race from Phase 16 were all found
+  and fixed within their own development pass, never shipped.)
 
 ### Deferred (not bugs — explicit scope decisions)
 
-- **A `ListingImage` can get stuck at `PENDING` forever if its processing
-  job exhausts all 3 retry attempts** — no code path marks it permanently
-  failed or re-queues it; from the seller's side, it just never appears,
-  indistinguishable from "still processing." Found in Phase 15's audit,
-  not fixed (low severity, low current likelihood — a transient storage/
-  `sharp` failure). A fix would mirror `listing-expiry`'s existing
-  repeat-job pattern: a periodic sweep that finds `PENDING` images past
-  some age and marks them `REJECTED` or re-queues them.
-- **No pruning job for expired `OtpCode`/`Session` rows** — not a
-  correctness bug (both are already excluded by `expiresAt`/`consumedAt`/
-  `revokedAt` checks in application logic), just unbounded table growth
-  with no operational answer yet. Found in Phase 15's audit alongside the
-  item above; low priority at current scale.
+- ~~A `ListingImage` can get stuck at `PENDING` forever if its processing
+  job exhausts all 3 retry attempts~~ — **resolved in Phase 16**: an
+  hourly `listing-image-sweep` job flips anything still `PENDING` past 1
+  hour old to `REJECTED`.
+- ~~No pruning job for expired `OtpCode`/`Session` rows~~ — **resolved in
+  Phase 16**: an hourly `auth-row-prune` job deletes both once past
+  `expiresAt`.
+- **Three unbounded (unpaginated) list queries**: `listOrdersForBuyer`/
+  `listOrdersForSeller` (`src/modules/orders/orders.ts`) and
+  `listListingsByOwner` (`src/modules/catalog/listings.ts`) have no
+  `take`/`skip`, unlike every other list function in the codebase
+  (`search`, `notifications`, `moderation`, pending-review all use a
+  `DEFAULT_LIMIT`/`MAX_LIMIT` pattern). Found in Phase 16's audit — scoped
+  to the caller's own data (not an attacker-controlled cross-user
+  surface), so a growing performance problem, not a security bug. Not
+  fixed this phase: closing it properly means updating 3 service
+  functions, their 3 API routes, and their 3 frontend pages' consumption
+  pattern (list-all vs. paginate) — a larger, separate unit of work.
+- **`toFixed(2)`-based money rounding in `src/modules/shipping/commission.ts`**
+  has the well-known IEEE-754 half-cent edge case. Found in Phase 16's
+  audit; not a newly-introduced bug — every money value in this codebase
+  already round-trips `Decimal` → `Number()` the same way, so this is a
+  pre-existing, systemic pattern, not worth a special-case fix in one
+  function while leaving the same pattern everywhere else. Revisit only
+  if real settlement data ever shows a discrepancy.
 
 - **Sentry is architecturally complete but inactive** — see "OWNER
   DECISION REQUIRED" below. Every other observability feature (request
@@ -1079,6 +1150,41 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   and scope discipline (one phase, completable in one clean pass) beats
   fixing everything found in a single audit.
 
+## Technical/Architecture Decisions (Phase 16)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- The `ListingImage` sweep and `OtpCode`/`Session` pruning jobs both
+  copy `listing-expiry.ts`'s exact BullMQ repeatable-job shape rather
+  than inventing a new pattern — a plain sweep function, a dedicated
+  queue, a worker registered via `queue.add()` with a fixed `jobId` +
+  `repeat`.
+- A stuck `ListingImage` is marked `REJECTED` (reusing the existing
+  terminal state), not re-queued — re-queuing indefinitely risks
+  infinite retries on a permanently-broken file. Expired auth rows are
+  hard-deleted, not moved to a terminal status — unlike
+  `Listing`/`ListingImage`, nothing reads them for history once expired.
+- The upload-size check happens via a new `getObjectSize()` on
+  `StorageProvider`, called **before** `getObject()` in
+  `processListingImage` — checking after would already have paid the
+  memory cost of the oversized buffer, which is the actual vector being
+  closed. 15 MB is a technical default (generous for a real phone-camera
+  photo, still bounding worst-case per-job memory), not a product call.
+- `createListing`'s active-listing-limit race is a count-then-create
+  race against an aggregate, not a single row's state transition — the
+  `updateMany`-with-WHERE-guard pattern Phase 15 used for checkout/
+  transitions doesn't apply here. Fixed with a `Serializable`-isolation
+  transaction plus a single retry on Postgres's own conflict detection
+  (error `40001`/Prisma `P2034`), not an application-level guard.
+- Two further findings from this phase's audit (unpaginated
+  `listOrdersForBuyer`/`listOrdersForSeller`/`listListingsByOwner`; a
+  systemic `toFixed(2)` money-rounding pattern) were deliberately left
+  unfixed — the pagination gap is scoped to the caller's own data (not a
+  security issue) and touches 9 files to fix properly; the rounding
+  pattern is pre-existing everywhere in the codebase, not newly
+  introduced. Both moved to Known Issues/Deferred rather than folded in,
+  keeping this phase completable in one clean pass.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -1148,33 +1254,34 @@ None.
 
 ## Exact Next Action
 
-Phase 15 is committed and pushed (both branches kept in sync — see Git
+Phase 16 is committed and pushed (both branches kept in sync — see Git
 Safety in `CLAUDE.md` and this session's owner authorization to merge
 into `main`). Per the standing execution rule (one phase at a time,
 validate, stop for approval), **this session stops here**, awaiting
 direction on what to build next.
 
-**Important precedent from this phase**: the previous session concluded
-"no further purely-technical gap was identified" and explicitly asked
-the next session to re-audit rather than trust that unchecked. This
-session did exactly that and found a real, live double-sell race
-condition in checkout, a matching race in order transitions, a CI
-workflow that could never actually pass (missing Redis service), and a
-completely untested `payments` module — none of which the prior
-Explore-based pass had surfaced. **The lesson: "nothing found" from one
-audit pass is not the same as "nothing exists."** Every future session
-should keep re-auditing with fresh eyes (different angles: security,
-concurrency, test coverage, operational readiness, not just "what's the
-next feature") rather than treating a prior session's clean bill of
-health as durable truth.
+**Important precedent, now confirmed twice**: Phase 15 found a real
+double-sell race a prior audit had missed and asked the next session to
+keep re-auditing rather than trust "nothing left" unchecked. Phase 16
+did exactly that and found four more genuine, previously-undocumented
+gaps (two of them already flagged as candidates, two entirely new: a
+real upload memory-exhaustion vector, and a `createListing` race of the
+exact same class Phase 15 had just finished hardening against
+elsewhere). **Two audits in a row have each found real things a prior
+pass missed — this is now a pattern, not a one-off.** Every future
+session must keep re-auditing with fresh eyes before assuming the
+roadmap below is complete.
 
 Remaining candidates, none of them purely-technical-and-unstarted at
 this point:
 
-- **The two minor Deferred items this phase's audit found but didn't fix**
-  (see Known Issues → Deferred): a `ListingImage` stuck-at-`PENDING`
-  sweep, and an `OtpCode`/`Session` pruning job. Both low severity,
-  genuinely technical, no owner decision needed — the most likely
+- **The two Deferred items this phase's audit found but didn't fix** (see
+  Known Issues → Deferred): pagination for `listOrdersForBuyer`/
+  `listOrdersForSeller`/`listListingsByOwner` (touches 3 service
+  functions + 3 API routes + 3 frontend pages), and the systemic
+  `toFixed(2)` money-rounding note (revisit only if real data shows
+  drift). The pagination item is genuinely technical, no owner decision
+  needed, and larger than a single-session drop-in fix — the most likely
   next purely-technical unit of work if nothing higher-priority emerges
   from a fresh audit.
 - **SMS gateway activation** — purely an owner action (pick a gateway,
@@ -1194,13 +1301,13 @@ this point:
   `FLAG_FOR_REVIEW`) — a genuine product/velocity trade-off, flagged as a
   possible **OWNER DECISION REQUIRED** in Known Issues; not started.
 - **Verifying the Paymob integration against a real sandbox** (Deferred
-  since Phase 5, sharpened this phase — the `merchant_order_id`
+  since Phase 5, sharpened in Phase 15 — the `merchant_order_id`
   extraction now has a defensive fallback, but which of its two checked
   locations Paymob's real API actually uses is still unconfirmed) — needs
   owner-supplied credentials.
 
 A future session should re-run its own OODA audit (CLAUDE.md Section 4)
-from a fresh angle rather than just re-scan this list — this phase is
-direct proof that doing so finds real things. Read this file +
+from a fresh angle rather than just re-scan this list — two phases in a
+row are direct proof that doing so finds real things. Read this file +
 `docs/*` fresh at the start of that session and confirm current git
 state matches this document before writing any code.

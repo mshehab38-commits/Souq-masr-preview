@@ -33,8 +33,26 @@ const VARIANTS = [
   { name: "full", width: 1600 },
 ] as const;
 
+// branding.ts has had an equivalent MAX_UPLOAD_BYTES check since Phase 4;
+// listing images never got one. Checked via getObjectSize() before ever
+// calling getObject() — loading an oversized buffer into memory (to then
+// reject it) would already be the memory-exhaustion problem this guards
+// against, since the worker runs at concurrency 4.
+const MAX_LISTING_IMAGE_BYTES = 15 * 1024 * 1024;
+
 export async function processListingImage(data: ImageProcessingJobData): Promise<void> {
   const storage = getStorageProvider();
+
+  const size = await storage.getObjectSize(data.originalKey);
+  if (size > MAX_LISTING_IMAGE_BYTES) {
+    await prisma.listingImage.update({
+      where: { id: data.listingImageId },
+      data: { status: "REJECTED" },
+    });
+    logger.warn("Rejected upload: exceeds max size", { listingImageId: data.listingImageId, size });
+    return;
+  }
+
   const original = await storage.getObject(data.originalKey);
 
   if (!detectImageMime(original)) {

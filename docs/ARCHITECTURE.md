@@ -17,7 +17,7 @@ This is enforced mechanically, not by convention alone:
 `.dependency-cruiser.cjs` defines a forbidden rule that blocks any import
 of `src/modules/<x>/<anything other than index.ts or service.ts>` from
 outside module `<x>`. `npm run boundaries` runs this check; it's wired
-into CI. As of Phase 14: 220 modules, 779 dependencies, zero violations
+into CI. As of Phase 16: 222 modules, 786 dependencies, zero violations
 (the `notifications` ⇄ `identity` cycle across two `service.ts` barrels
 is allowed by this rule and verified safe — see `docs/DECISIONS.md`).
 
@@ -112,16 +112,18 @@ functions directly, not `fetch()`).
 
 ## Background Jobs
 
-Introduced in Phase 3, extended in Phase 4. Three BullMQ queues
-(`src/jobs/queues.ts`):
+Introduced in Phase 3, extended in Phase 4 and Phase 16. Five BullMQ
+queues (`src/jobs/queues.ts`):
 
 - **`image-processing`** — triggered by `confirmImageUpload()` after a
   client finishes uploading an original image. The worker
-  (`src/jobs/image-processing.ts`) downloads the original, validates it
-  by magic bytes (never trusts the client's declared `Content-Type`),
-  strips EXIF/GPS metadata, and produces WebP thumbnail/medium/full
-  variants via `sharp`, then flips the `ListingImage` row to `READY` (or
-  `REJECTED` if the file doesn't pass validation).
+  (`src/jobs/image-processing.ts`) checks the original's size (rejecting
+  anything over 15 MB before ever loading it into memory — Phase 16),
+  downloads the original, validates it by magic bytes (never trusts the
+  client's declared `Content-Type`), strips EXIF/GPS metadata, and
+  produces WebP thumbnail/medium/full variants via `sharp`, then flips
+  the `ListingImage` row to `READY` (or `REJECTED` if the file doesn't
+  pass validation).
 - **`search-indexing`** — triggered by `createListing`/`updateListing`.
   Recomputes `Listing.searchText` (Arabic-normalized title +
   description) asynchronously, keeping the write path fast and the
@@ -132,6 +134,18 @@ Introduced in Phase 3, extended in Phase 4. Three BullMQ queues
   `queue.add()` with a fixed `jobId` + `repeat` option, which BullMQ
   dedupes on — safe to re-register on every worker-process restart
   without creating duplicate schedulers.
+- **`listing-image-sweep`** (Phase 16) — a repeatable job (hourly) that
+  flips any `ListingImage` still `PENDING` more than an hour after
+  creation to `REJECTED` (`sweepStuckListingImages`) — the backstop for
+  `processListingImage` having no `catch` block: a thrown error (storage
+  failure, `sharp()` throwing on a corrupt file) exhausts BullMQ's 3
+  retries and marks the *job* failed without ever touching
+  `ListingImage.status`, which would otherwise stay `PENDING` forever.
+- **`auth-row-prune`** (Phase 16) — a repeatable job (hourly) that
+  `deleteMany`s expired `OtpCode`/`Session` rows (`pruneExpiredAuthRows`).
+  Neither table is filtered by expiry at the query level elsewhere
+  (`verifyOtp`/`getSessionUser` fetch then reject in application code),
+  so without this both grow unbounded.
 
 Jobs run in a **separate process** (`src/worker.ts`, started via `npm run
 worker`), not inside the Next.js server — so a slow/crashing image job
@@ -213,7 +227,7 @@ the category's `CategoryAttribute` rows fetched at request time, and
 ## Testing
 
 - **Unit/integration** (Vitest): module service functions tested directly
-  against the real dev Postgres/Redis (not mocked) — 309 tests across 38
+  against the real dev Postgres/Redis (not mocked) — 318 tests across 41
   files as of Phase 13.
 - **Component** (Vitest + Testing Library + jsdom): design-system
   primitives snapshot/interaction tests.

@@ -2,6 +2,8 @@ import {
   createImageProcessingWorker,
   createSearchIndexWorker,
   createListingExpiryWorker,
+  createListingImageSweepWorker,
+  createAuthRowPruneWorker,
 } from "@/jobs/workers";
 import { logger } from "@/lib/logger";
 
@@ -21,10 +23,18 @@ async function main() {
     createImageProcessingWorker(),
     createSearchIndexWorker(),
     await createListingExpiryWorker(),
+    await createListingImageSweepWorker(),
+    await createAuthRowPruneWorker(),
   ];
 
   logger.info("Workers started", {
-    queues: ["image-processing", "search-indexing", "listing-expiry"],
+    queues: [
+      "image-processing",
+      "search-indexing",
+      "listing-expiry",
+      "listing-image-sweep",
+      "auth-row-prune",
+    ],
   });
 
   async function shutdown() {
