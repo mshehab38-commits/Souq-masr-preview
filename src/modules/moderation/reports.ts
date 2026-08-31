@@ -159,9 +159,9 @@ export async function resolveReport(
   if (resolution.decision === "ACTION_TAKEN" && resolution.action) {
     const actionSucceeded =
       resolution.action === "REMOVE_LISTING"
-        ? Boolean(report.listingId) && (await adminRemoveListing(report.listingId as string))
+        ? Boolean(report.listingId) && (await adminRemoveListing(report.listingId as string, moderatorId))
         : resolution.action === "FLAG_FOR_REVIEW"
-          ? Boolean(report.listingId) && (await flagListingForReview(report.listingId as string))
+          ? Boolean(report.listingId) && (await flagListingForReview(report.listingId as string, moderatorId))
           : Boolean(report.targetUserId) &&
             (await setUserStatus(report.targetUserId as string, "SUSPENDED", moderatorId));
     if (!actionSucceeded) return { success: false, error: "action_failed" };
@@ -182,7 +182,12 @@ export async function resolveReport(
     action: "admin.report.resolve",
     targetType: "Report",
     targetId: reportId,
-    metadata: { decision: resolution.decision, action: resolution.decision === "ACTION_TAKEN" ? resolution.action : undefined },
+    metadata: {
+      decision: resolution.decision,
+      action: resolution.decision === "ACTION_TAKEN" ? resolution.action : undefined,
+      listingId: report.listingId ?? undefined,
+      targetUserId: report.targetUserId ?? undefined,
+    },
   });
 
   await createNotification({
