@@ -11,12 +11,18 @@ import { csrfHeaders } from "@/lib/csrf-headers";
 interface SettingsFormProps {
   freeListingActiveLimit: number | null;
   paymentProcessingFeeBearer: PaymentFeeBearer | null;
+  requirePrePublishReview: boolean;
 }
 
-export function SettingsForm({ freeListingActiveLimit, paymentProcessingFeeBearer }: SettingsFormProps) {
+export function SettingsForm({
+  freeListingActiveLimit,
+  paymentProcessingFeeBearer,
+  requirePrePublishReview,
+}: SettingsFormProps) {
   const router = useRouter();
   const [limitInput, setLimitInput] = useState(freeListingActiveLimit?.toString() ?? "");
   const [feeBearer, setFeeBearer] = useState(paymentProcessingFeeBearer ?? "");
+  const [prePublishReview, setPrePublishReview] = useState(requirePrePublishReview);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,6 +37,7 @@ export function SettingsForm({ freeListingActiveLimit, paymentProcessingFeeBeare
         body: JSON.stringify({
           freeListingActiveLimit: limitInput.trim() === "" ? null : Number(limitInput),
           paymentProcessingFeeBearer: feeBearer === "" ? null : feeBearer,
+          requirePrePublishReview: prePublishReview,
         }),
       });
       if (!response.ok) {
@@ -83,6 +90,22 @@ export function SettingsForm({ freeListingActiveLimit, paymentProcessingFeeBeare
               (الدفع عند الاستلام هو الخيار الوحيد المتاح)
             </p>
           )}
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label className="flex items-center gap-2 text-sm font-medium text-neutral-700">
+            <input
+              type="checkbox"
+              checked={prePublishReview}
+              onChange={(event) => setPrePublishReview(event.target.checked)}
+              className="h-4 w-4 rounded border-neutral-300 text-teal-600 focus:ring-teal-600"
+            />
+            طلب مراجعة الإعلانات الجديدة قبل نشرها
+          </label>
+          <p className="text-sm text-neutral-500">
+            عند التفعيل، يجب على المشرف الموافقة على كل إعلان جديد قبل ظهوره
+            للجمهور. الإعداد الحالي: {requirePrePublishReview ? "مُفعّل" : "غير مُفعّل (الإعلانات تُنشر مباشرة)"}.
+          </p>
         </div>
 
         {error && <p className="text-sm text-danger">{error}</p>}

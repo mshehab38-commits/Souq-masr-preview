@@ -78,7 +78,7 @@ export function PendingReviewQueue() {
               loading={actingOn === listing.id}
               onClick={() => decide(listing.id, "APPROVE")}
             >
-              الموافقة وإعادة النشر
+              الموافقة والنشر
             </Button>
             <Button
               size="sm"

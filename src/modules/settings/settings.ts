@@ -17,6 +17,7 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
 export interface UpdatePlatformSettingsInput {
   freeListingActiveLimit?: number | null;
   paymentProcessingFeeBearer?: PaymentFeeBearer | null;
+  requirePrePublishReview?: boolean;
 }
 
 export async function updatePlatformSettings(

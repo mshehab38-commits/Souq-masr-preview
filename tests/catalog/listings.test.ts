@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
-import { createListing, listListingsByOwner } from "@/modules/catalog/listings";
+import {
+  createListing,
+  listListingsByOwner,
+  listPendingReviewListings,
+  decidePendingListing,
+} from "@/modules/catalog/listings";
 import { updatePlatformSettings } from "@/modules/settings/settings";
 
 const createdUserIds: string[] = [];
@@ -29,10 +34,58 @@ describe("createListing", () => {
     await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
     await prisma.platformSettings.updateMany({
       where: { id: "singleton" },
-      data: { freeListingActiveLimit: null },
+      data: { freeListingActiveLimit: null, requirePrePublishReview: false },
     });
     createdUserIds.length = 0;
     createdCategoryIds.length = 0;
+  });
+
+  it("creates an ACTIVE listing when requirePrePublishReview is off (default, unchanged behavior)", async () => {
+    const owner = await makeUser();
+    const category = await makeCategory();
+
+    const result = await createListing(owner.id, { categoryId: category.id, title: "إعلان عادي" });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    const listing = await prisma.listing.findUniqueOrThrow({ where: { id: result.listingId } });
+    expect(listing.status).toBe("ACTIVE");
+  });
+
+  it("creates a PENDING_REVIEW listing with a real expiresAt when requirePrePublishReview is on", async () => {
+    const admin = await makeUser({ role: "ADMIN" });
+    const owner = await makeUser();
+    const category = await makeCategory();
+    await updatePlatformSettings(admin.id, { requirePrePublishReview: true });
+
+    const result = await createListing(owner.id, { categoryId: category.id, title: "إعلان يحتاج مراجعة" });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    const listing = await prisma.listing.findUniqueOrThrow({ where: { id: result.listingId } });
+    expect(listing.status).toBe("PENDING_REVIEW");
+    expect(listing.expiresAt).not.toBeNull();
+  });
+
+  it("a requirePrePublishReview listing flows through the existing pending-review queue unchanged", async () => {
+    const admin = await makeUser({ role: "ADMIN" });
+    const owner = await makeUser();
+    const category = await makeCategory();
+    await updatePlatformSettings(admin.id, { requirePrePublishReview: true });
+
+    const result = await createListing(owner.id, { categoryId: category.id, title: "إعلان في قائمة المراجعة" });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    const queue = await listPendingReviewListings();
+    expect(queue.items.some((item) => item.id === result.listingId)).toBe(true);
+
+    const decided = await decidePendingListing(result.listingId, "APPROVE");
+    expect(decided).not.toBeNull();
+
+    const listing = await prisma.listing.findUniqueOrThrow({ where: { id: result.listingId } });
+    expect(listing.status).toBe("ACTIVE");
+    expect(listing.expiresAt).not.toBeNull();
   });
 
   it("creates an ACTIVE listing when no limit is configured (fails open)", async () => {

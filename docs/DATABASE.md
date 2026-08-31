@@ -298,9 +298,18 @@ structurally, not just by convention:
 - **`PlatformSettings`** — a singleton row (fixed id `"singleton"`,
   lazily created on first read) for cross-cutting config that doesn't
   need its own table: `freeListingActiveLimit` (nullable — null means no
-  cap is enforced, never an invented number) and
+  cap is enforced, never an invented number),
   `paymentProcessingFeeBearer` (nullable enum, irrelevant until a live
-  online payment provider exists).
+  online payment provider exists), and `requirePrePublishReview`
+  (Phase 19) — a non-nullable `Boolean @default(false)`, the first plain
+  toggle in this model. Unlike the nullable fields above, a boolean has
+  no meaningful third "owner hasn't decided yet" state, so it uses an
+  honest, safe default (today's existing behavior — publish straight to
+  `ACTIVE`) rather than the nullable-fails-open pattern. When set `true`,
+  every new listing is created at `PENDING_REVIEW` instead and flows
+  through the same admin queue (`listPendingReviewListings`/
+  `decidePendingListing`, see below) as a report-driven flag — no
+  changes were needed there. See `docs/DECISIONS.md`.
 - **`SubscriptionPlan`** — admin-managed, `monthlyPrice`/`yearlyPrice`
   both nullable (a plan with neither set can't be subscribed to — it's a
   named placeholder, not a free trial). Benefit fields

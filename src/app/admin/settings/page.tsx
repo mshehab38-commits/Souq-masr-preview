@@ -13,6 +13,7 @@ export default async function AdminSettingsPage() {
     <SettingsForm
       freeListingActiveLimit={settings.freeListingActiveLimit}
       paymentProcessingFeeBearer={settings.paymentProcessingFeeBearer}
+      requirePrePublishReview={settings.requirePrePublishReview}
     />
   );
 }

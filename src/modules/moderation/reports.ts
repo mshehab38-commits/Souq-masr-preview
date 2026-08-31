@@ -242,7 +242,7 @@ export async function decidePendingListing(
     type: "LISTING_REVIEW_DECIDED",
     title:
       decision === "APPROVE"
-        ? `تمت الموافقة على إعلانك "${listing.title}" وهو الآن نشط مجددًا`
+        ? `تمت الموافقة على إعلانك "${listing.title}" وهو الآن نشط`
         : `تم رفض إعلانك "${listing.title}" بعد المراجعة`,
   });
 

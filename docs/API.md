@@ -68,8 +68,10 @@ delivery address for notifications only, never a login credential — see
 
 ### `GET /api/verification-requests`
 
-Requires session. Returns the current user's own verification request
-history.
+Requires session. Paginated (`?page=`/`?limit=`, default 20, max 100).
+Returns `{ items, page, totalPages, totalCount }` — the current user's
+own verification request history. No pagination UI control is built for
+this list: a user's own request count is structurally always small.
 
 ### `POST /api/verification-requests`
 
@@ -172,7 +174,12 @@ its underlying storage objects.
 
 ### `GET /api/favorites`
 
-Requires session. Returns the current user's favorited listings.
+Requires session. Paginated (`?page=`/`?limit=`, default 20, max 100).
+Returns `{ items, page, totalPages, totalCount }` — the current user's
+favorited listings. No UI consumer exists yet (favorites are only
+toggled from a listing's detail page); this route is documented API
+surface for a future client, same as `/api/orders/buying`,
+`/api/orders/selling`, and `/api/listings/mine`.
 
 ## Stores (Phase 4)
 
