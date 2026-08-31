@@ -7,15 +7,15 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-31 (Phase 19 completion)
+Last updated: 2026-08-31 (Phase 20 completion)
 
 ## Current Status
 
-**Phase 18 (closing two more unbounded "list my own data" queries a
-fresh audit found beyond Phase 17's three) and Phase 19 (a
-`requirePrePublishReview` admin toggle, scaffolding only, default off —
-zero live behavior change) are both COMPLETE, validated, committed, and
-pushed.**
+**Phase 20 (twelve composite database indexes closing filter+sort query
+gaps a fresh audit found across `User`/`VerificationRequest`/`Listing`/
+`Favorite`/`Order`/`LedgerEntry`/`Report`) is COMPLETE, validated,
+committed, and pushed.** Phase 21 (rate limiting for the abuse-prone
+write endpoints the same audit round found) is next in this session.
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -69,7 +69,9 @@ tasks to be framed across disciplines).
 | 16 | Cleanup jobs + hardening: `ListingImage` sweep, `OtpCode`/`Session` pruning, upload size limit, `createListing` limit race fixed | `9a8c757` | Done |
 | 17 | Pagination for `listOrdersForBuyer`/`listOrdersForSeller`/`listListingsByOwner` | `4d47aad` | Done |
 | 18 | Pagination for `listFavoriteListings`/`getVerificationRequests`, the two more unbounded "list my own data" queries a follow-up audit found | this session | Done |
-| 19 | Pre-publish-review admin toggle: `requirePrePublishReview` on `PlatformSettings`, scaffolding only, default off | this session | **Done** |
+| 19 | Pre-publish-review admin toggle: `requirePrePublishReview` on `PlatformSettings`, scaffolding only, default off | `03b16dc` | Done |
+| 20 | Twelve composite DB indexes closing filter+sort query gaps (`User`/`VerificationRequest`/`Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`) | this session | **Done** |
+| 21 | Rate limiting for abuse-prone write endpoints + verification-request pending-dedupe | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -756,6 +758,34 @@ do not flip the live default.
   turn it on for the live marketplace remains open and is the owner's
   alone — this phase only makes the capability available.
 
+## What Was Completed in Phase 20
+
+A fresh audit — deliberately testing whether the prior session's
+"nothing purely-technical left" conclusion would hold, per this file's
+own standing precedent that it never has — found genuine missing
+composite database indexes on several high-growth tables, alongside a
+clean result on a separate IDOR/authorization audit (no gap found across
+all 55 API routes — not revisited).
+
+- **Twelve composite indexes added** (migration
+  `20260831192836_add_composite_indexes_for_pagination_queries`) across
+  `User`, `VerificationRequest`, `Listing` (two composites for its two
+  real query shapes — default browse and price-sorted browse),
+  `Favorite`, `Order`, and `LedgerEntry`/`Report`. Each targets a real,
+  named call site (`listUsers`, `getVerificationRequests`/
+  `listVerificationRequests`, `listListingsByOwner`,
+  `PostgresSearchProvider`'s search, `listFavoriteListings`,
+  `listOrdersForBuyer`/`listOrdersForSeller`, `listLedgerEntries`,
+  `listReports`) — not a speculative index on every possible filter
+  combination. Full details in `docs/DATABASE.md`.
+- Deliberately **not** indexed this phase (real but lower-value —
+  Tier 3): the `Listing` pending-review queue, `Subscription`,
+  `ShippingSettlement`. See Known Issues → Deferred.
+- Old single-column indexes that these composites partially supersede
+  were deliberately left in place, not dropped — see `docs/DECISIONS.md`.
+- No schema removal, no application code change, no product/business
+  decision involved — a pure technical hardening pass.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -786,13 +816,33 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 17 migrations applied. New this phase (Phase 19):
-  `20260831183256_add_require_pre_publish_review` (adds
-  `PlatformSettings.requirePrePublishReview`). Phases 17-18 made no
-  schema change. Schema at `prisma/schema.prisma`. See
-  `docs/DATABASE.md` for full entity documentation.
+- 18 migrations applied. New this phase (Phase 20):
+  `20260831192836_add_composite_indexes_for_pagination_queries` (12
+  composite indexes across `User`/`VerificationRequest`/`Listing`/
+  `Favorite`/`Order`/`LedgerEntry`/`Report` — see `docs/DATABASE.md`).
+  Phase 19 added `20260831183256_add_require_pre_publish_review`. Schema
+  at `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
+  documentation.
 
-## Tests & Results (Phase 19, all green)
+## Tests & Results (Phase 20, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (223 modules, 794 dependencies —
+  unchanged; this is a schema-only migration, no new module/dependency
+  files).
+- `npm test` — **337/337 unit tests passing** across 44 files —
+  unchanged from Phase 19. No new tests this phase: index-only
+  migrations aren't unit-tested in this codebase's established
+  convention (see `docs/DECISIONS.md`).
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified — a
+  pure index addition changes query plans, never query results.
+- `npm run build` — clean, warning-free production build; no new
+  routes.
+- `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
+  sync" after the named migration above.
+
+### Tests & Results (Phase 19, for reference)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
@@ -945,6 +995,13 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ### Deferred (not bugs — explicit scope decisions)
 
+- **Three lower-value composite-index candidates from the Phase 20
+  audit, not added**: the `Listing` pending-review queue (`status,
+  updatedAt` — admin-only, low volume), `Subscription` (`userId, status,
+  currentPeriodEnd` — small per-user row count), `ShippingSettlement`
+  (`periodStart` — one row per company per settlement period, genuinely
+  low volume). Revisit only if one of these tables' real growth pattern
+  changes.
 - ~~A `ListingImage` can get stuck at `PENDING` forever if its processing
   job exhausts all 3 retry attempts~~ — **resolved in Phase 16**: an
   hourly `listing-image-sweep` job flips anything still `PENDING` past 1
@@ -1411,6 +1468,22 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   marketplace behavior changed. Turning it on remains the owner's
   decision — see "OWNER DECISION REQUIRED" below.
 
+## Technical/Architecture Decisions (Phase 20)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- Twelve composite indexes, each targeting a real, named query call
+  site — not a speculative index on every possible filter combination.
+- `Listing`'s public search/browse path got exactly two composites
+  (default recency browse, price-sorted browse), not one per possible
+  narrowing combination, since Postgres can only use one composite
+  index efficiently per query.
+- Old, now-partially-redundant single-column indexes were deliberately
+  left in place rather than dropped — a separate, lower-value cleanup
+  with its own small risk, out of scope for this pass.
+- No test changes: index-only migrations have never been unit-tested in
+  this codebase's established convention.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -1496,31 +1569,30 @@ None.
 
 ## Exact Next Action
 
-Phases 18 and 19 are both committed and pushed (both branches kept in
-sync — see Git Safety in `CLAUDE.md` and this session's owner
-authorization to merge into `main`). Everything the owner asked for in
-this session's three-part request is now done: the verification pass
-was green, the pagination audit's two real gaps were closed (Phase 18),
-and the owner-gated items were worked through as far as technically
-possible without deciding anything reserved to the owner — the
-pre-publish-review toggle now has real scaffolding (Phase 19), and
-SMS/Email/Sentry/Paymob were confirmed to have nothing further
-buildable (see below). **No purely-technical, unstarted candidate
-remains at this point** — everything left genuinely needs either owner
-credentials or an owner product decision.
+Phase 20 is committed and pushed (both branches kept in sync — see Git
+Safety in `CLAUDE.md` and this session's owner authorization to merge
+into `main`). The prior session's own "no purely-technical, unstarted
+candidate remains" conclusion was re-tested this session via three
+fresh audits (IDOR/authorization, rate limiting, DB indexes) — the
+IDOR audit came back clean, but the rate-limiting and DB-index audits
+each found real, genuine, purely-technical gaps. Phase 20 closed the
+DB-index half. **Phase 21 (rate limiting for the abuse-prone write
+endpoints the same audit round found, plus a verification-request
+pending-dedupe fix) is next in this same session.**
 
-**Important precedent, now confirmed across five phases**: Phase 15
+**Important precedent, now confirmed across six phases**: Phase 15
 found a real double-sell race a prior audit had missed; Phase 16
 re-audited and found four more genuine gaps; Phase 17 closed the one
 remaining genuinely-technical Deferred item from that audit
 (pagination); Phase 18's own re-audit of Phase 17's "these three were
 the only holdouts" conclusion found two more; Phase 19 closed the
-scaffolding half of the one remaining product-decision item. Every
-future session must keep re-auditing with fresh eyes rather than
-assuming the roadmap below is complete, and should treat a Deferred
-item explicitly scoped as "technical, no owner decision needed, just
-larger" as real backlog to eventually clear, not a place to park things
-indefinitely.
+scaffolding half of the one remaining product-decision item; Phase 20's
+own re-audit of "nothing technical left" found twelve missing composite
+indexes and a separate rate-limiting gap (Phase 21). Every future
+session must keep re-auditing with fresh eyes rather than assuming the
+roadmap below is complete, and should treat a Deferred item explicitly
+scoped as "technical, no owner decision needed, just larger" as real
+backlog to eventually clear, not a place to park things indefinitely.
 
 **SMS gateway, Email gateway, Sentry**: all three already have complete,
 tested technical scaffolding (Phases 8, 11, 14) — a vendor-agnostic HTTP

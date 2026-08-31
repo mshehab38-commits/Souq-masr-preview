@@ -481,3 +481,57 @@ automated `SYSTEM` actions, so they were never meant to be conflated.
   viewer, who can see any non-deleted listing regardless of status, since
   moderating `PENDING_REVIEW`/`REJECTED`/`DRAFT` content requires being
   able to look at it.
+
+## Composite Indexes for Filter+Sort Query Shapes (Phase 20)
+
+A fresh audit (migration `20260831192836_add_composite_indexes_for_pagination_queries`)
+found several high-growth tables queried with a filter+sort combination
+that only single-column indexes covered — fine at today's data volume,
+but a real production slowdown as these tables grow, since Postgres can
+use a single-column index for the filter but still has to sort the
+matching rows in memory afterward. Twelve composite indexes were added,
+each targeting a specific, real call site (not speculative combinations):
+
+- **`users_deletedAt_createdAt_idx`** — the admin user directory
+  (`listUsers`) filters `deletedAt: null`, sorts `createdAt`. `User` had
+  no index at all besides the unique `phone` before this.
+- **`verification_requests_userId_createdAt_idx`** /
+  **`verification_requests_status_createdAt_idx`** — a user's own
+  request history (`getVerificationRequests`) and the admin review queue
+  (`listVerificationRequests`) respectively.
+- **`listings_ownerId_deletedAt_createdAt_idx`** — the seller's own
+  "my listings" dashboard (`listListingsByOwner`).
+- **`listings_status_deletedAt_categoryId_createdAt_idx`** /
+  **`listings_status_deletedAt_price_idx`** — the two real shapes the
+  public search/browse path (`PostgresSearchProvider`) actually uses:
+  default browse sorted by recency, and price-sorted browse. This is the
+  single most-invoked query in the app (every homepage/category page
+  load); deliberately just these two composites, not one per possible
+  filter combination — Postgres can only use one composite index
+  efficiently per query, and `governorateId`/`cityId` narrowing on top of
+  either shape is adequately served by the existing single-column
+  `@@index([governorateId])` via a bitmap AND when it's actually used.
+- **`favorites_userId_createdAt_idx`** — `listFavoriteListings`. The
+  pre-existing `@@unique([userId, listingId])` didn't help here since its
+  second key is `listingId`, not `createdAt`.
+- **`orders_buyerId_createdAt_idx`** / **`orders_sellerId_createdAt_idx`**
+  — `listOrdersForBuyer`/`listOrdersForSeller`.
+- **`ledger_entries_createdAt_idx`** / **`ledger_entries_account_createdAt_idx`**
+  — `listLedgerEntries`. `LedgerEntry` had no `createdAt` index at all
+  before this, so an unfiltered "recent activity" query was a full
+  sequential scan even though it's `take`-limited.
+- **`reports_status_createdAt_idx`** — the moderation queue
+  (`listReports`).
+
+The old single-column indexes these composites partially supersede
+(`Order.buyerId`/`sellerId`, `VerificationRequest.userId`, etc.) were
+deliberately left in place — `getUserDetail`'s plain equality counts on
+`Order.buyerId`/`sellerId` still use them fine via a composite's leading
+column, and dropping now-partially-redundant indexes is a separate,
+lower-value cleanup out of scope for this pass. See `docs/DECISIONS.md`.
+
+Deliberately **not** indexed this phase (real but lower-value — Tier 3):
+the `Listing` pending-review queue (`status, updatedAt` — admin-only, low
+volume), `Subscription` (`userId, status, currentPeriodEnd` — small
+per-user row count), `ShippingSettlement` (`periodStart` — one row per
+company per settlement period, genuinely low volume).
