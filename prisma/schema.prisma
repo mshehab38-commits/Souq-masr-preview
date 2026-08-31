@@ -57,6 +57,7 @@ model User {
   reportsReviewed      Report[]              @relation("ReportsReviewed")
   notifications        Notification[]
 
+  @@index([deletedAt, createdAt])
   @@map("users")
 }
 
@@ -127,6 +128,8 @@ model VerificationRequest {
 
   @@index([userId])
   @@index([status])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
   @@map("verification_requests")
 }
 
@@ -290,6 +293,9 @@ model Listing {
   @@index([status])
   @@index([governorateId])
   @@index([price])
+  @@index([ownerId, deletedAt, createdAt])
+  @@index([status, deletedAt, categoryId, createdAt])
+  @@index([status, deletedAt, price])
   @@index([searchText(ops: raw("gin_trgm_ops"))], type: Gin, map: "listings_searchText_trgm_idx")
   @@map("listings")
 }
@@ -328,6 +334,7 @@ model Favorite {
 
   @@unique([userId, listingId])
   @@index([listingId])
+  @@index([userId, createdAt])
   @@map("favorites")
 }
 
@@ -730,6 +737,8 @@ model Order {
   @@index([sellerId])
   @@index([listingId])
   @@index([status])
+  @@index([buyerId, createdAt])
+  @@index([sellerId, createdAt])
   @@map("orders")
 }
 
@@ -810,6 +819,8 @@ model LedgerEntry {
 
   @@index([type])
   @@index([orderId])
+  @@index([createdAt])
+  @@index([account, createdAt])
   @@map("ledger_entries")
 }
 
@@ -866,6 +877,7 @@ model Report {
   @@index([status])
   @@index([listingId])
   @@index([targetUserId])
+  @@index([status, createdAt])
   @@map("reports")
 }
 

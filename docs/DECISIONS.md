@@ -1091,6 +1091,45 @@ audit's scope (user-facing "list my own data" endpoints). Both are
 recorded in `PROJECT_STATE.md`'s Known Issues as deferred, not silently
 dropped.
 
+## Composite indexes target real filter+sort call sites, not every possible combination
+
+A fresh audit found several high-growth tables (`Order`, `Listing`,
+`Favorite`, `VerificationRequest`, `Report`, `LedgerEntry`, `User`)
+queried with a filter+sort combination no existing index fully covered
+— see `docs/DATABASE.md`'s "Composite Indexes" section for the full
+list. Two design choices worth recording:
+
+1. **`Listing`'s public search/browse path got exactly two composites,
+   not one per filter combination.** `PostgresSearchProvider` supports
+   optional `categoryId`/`governorateId`/`cityId`/price-range narrowing
+   on top of a base `status`+`deletedAt` filter, sorted by either
+   `createdAt` or `price`. Postgres can only use one composite index
+   efficiently per query, so indexing every possible narrowing
+   combination would multiply write overhead on every listing
+   insert/update for diminishing returns. The two composites added
+   (`[status, deletedAt, categoryId, createdAt]` and `[status,
+   deletedAt, price]`) cover the two real shapes that matter — default
+   recency browse and price-sorted browse — while `governorateId`/
+   `cityId` narrowing on top of either is still served adequately by
+   the existing single-column `@@index([governorateId])` via a bitmap
+   AND when it's actually used.
+2. **The old, now-partially-redundant single-column indexes
+   (`Order.buyerId`/`sellerId`, `VerificationRequest.userId`, etc.) were
+   deliberately left in place, not dropped.** `getUserDetail`
+   (`src/modules/identity/admin-users.ts`) does plain equality counts on
+   `Order.buyerId`/`sellerId` elsewhere in the codebase — a composite
+   index still serves those via its leading column, so nothing breaks —
+   but confirming every remaining use of each old index before safely
+   dropping any of them is a separate, lower-value cleanup with its own
+   small risk of missing an undiscovered call site. Kept this migration
+   to pure additions, matching the established "keep it completable in
+   one clean pass" scope discipline from Phases 16-19.
+
+No schema-level tests were added for this migration — this codebase has
+never unit-tested index existence for any prior migration, and
+`EXPLAIN ANALYZE`-based query-plan assertions aren't part of its
+established test conventions.
+
 ## `requirePrePublishReview` is a non-nullable boolean, not the usual nullable-fails-open pattern
 
 Every other `PlatformSettings` field (`freeListingActiveLimit Int?`,
