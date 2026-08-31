@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { detectImageMime, processListingImage } from "@/jobs/image-processing";
 import { prisma } from "@/lib/db";
@@ -77,5 +78,42 @@ describe("processListingImage", () => {
 
     sizeSpy.mockRestore();
     getObjectSpy.mockRestore();
+  });
+
+  it("never resurrects a row the listing-image-sweep already rejected — even on a fully successful re-run", async () => {
+    const owner = await prisma.user.create({
+      data: { phone: `+2010${Math.floor(10_000_000 + Math.random() * 89_999_999)}` },
+    });
+    createdUserIds.push(owner.id);
+    const category = await prisma.category.create({
+      data: { slug: `img-race-${Math.random().toString(36).slice(2)}`, nameAr: "قسم", nameEn: "Category" },
+    });
+    createdCategoryIds.push(category.id);
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "إعلان" },
+    });
+    createdListingIds.push(listing.id);
+    // Simulates the sweep already having flipped this row to REJECTED (e.g.
+    // a worker-outage backlog) before this backlogged job finally runs.
+    const originalKey = `listings/${listing.id}/original.jpg`;
+    const image = await prisma.listingImage.create({
+      data: { listingId: listing.id, originalKey, status: "REJECTED" },
+    });
+
+    const validImage = await sharp({
+      create: { width: 4, height: 4, channels: 3, background: { r: 255, g: 0, b: 0 } },
+    })
+      .jpeg()
+      .toBuffer();
+    await getStorageProvider().putObject(originalKey, validImage, "image/jpeg");
+
+    // The job would otherwise succeed fully (valid, well-under-size image) —
+    // proving the guard, not an incidental rejection, is what keeps the row
+    // REJECTED.
+    await processListingImage({ listingImageId: image.id, originalKey });
+
+    const updated = await prisma.listingImage.findUniqueOrThrow({ where: { id: image.id } });
+    expect(updated.status).toBe("REJECTED");
+    expect(updated.thumbnailUrl).toBeNull();
   });
 });

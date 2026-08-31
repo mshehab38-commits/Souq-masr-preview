@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { CreatePaymentResult, PaymentOrderInfo, PaymentProvider, WebhookVerificationResult } from "./types";
 
 const PAYMOB_BASE_URL = "https://accept.paymob.com/api";
@@ -147,7 +147,17 @@ export class PaymobPaymentProvider implements PaymentProvider {
     const concatenated = fields.map((value) => String(value ?? "")).join("");
     const computedHmac = createHmac("sha512", this.config.hmacSecret).update(concatenated).digest("hex");
 
-    if (computedHmac !== providedHmac) return { valid: false };
+    // A plain string comparison here would leak timing information about
+    // how many leading characters matched, in principle allowing an
+    // attacker to forge a valid signature byte-by-byte. timingSafeEqual
+    // requires equal-length buffers, so the length check must come first —
+    // an attacker-controlled header of the wrong length must never reach
+    // timingSafeEqual itself (it throws on a length mismatch).
+    const computedBuffer = Buffer.from(computedHmac, "hex");
+    const providedBuffer = Buffer.from(providedHmac, "hex");
+    if (computedBuffer.length !== providedBuffer.length || !timingSafeEqual(computedBuffer, providedBuffer)) {
+      return { valid: false };
+    }
 
     // Every other field this function reads comes from obj/obj.order/
     // obj.source_data (never the top level) — merchant_order_id is the

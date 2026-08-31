@@ -110,6 +110,12 @@ describe("PaymobPaymentProvider.verifyWebhook", () => {
     expect(result).toEqual({ valid: false });
   });
 
+  it("rejects a wrong-length hmac without throwing (timingSafeEqual requires equal-length buffers)", () => {
+    const { rawBody } = buildPayload();
+    const result = provider.verifyWebhook(rawBody, { hmac: "abcd" });
+    expect(result).toEqual({ valid: false });
+  });
+
   it("rejects a request with no hmac header at all", () => {
     const { rawBody } = buildPayload();
     const result = provider.verifyWebhook(rawBody, {});
