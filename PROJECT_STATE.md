@@ -7,15 +7,15 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-31 (Phase 16 completion)
+Last updated: 2026-08-31 (Phase 17 completion)
 
 ## Current Status
 
-**Phase 16 (Cleanup jobs + upload/listing-limit hardening: a sweep job
-for `ListingImage`s stuck at `PENDING`, an hourly prune job for expired
-`OtpCode`/`Session` rows, a 15 MB upload-size limit closing a real
-memory-exhaustion vector, and a `createListing` active-listing-limit
-race fixed) is COMPLETE, validated, committed, and pushed.**
+**Phase 17 (Pagination for the three previously-unbounded "list my own
+data" queries — `listOrdersForBuyer`, `listOrdersForSeller`,
+`listListingsByOwner` — brought in line with this codebase's existing
+pagination convention) is COMPLETE, validated, committed, and
+pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -66,8 +66,9 @@ tasks to be framed across disciplines).
 | 13 | Saved-search notification dedup, second migration-ordering bug fix | `ff69c0d` | Done |
 | 14 | Email notification delivery: `EmailProvider` abstraction, optional `User.email` profile field, concurrent SMS+email dispatch | `d201c59` | Done |
 | 15 | Concurrency-safety hardening: checkout double-sell race fixed, order-transition race fixed, CI missing Redis service fixed, `payments` module test coverage added | `5397d89` | Done |
-| 16 | Cleanup jobs + hardening: `ListingImage` sweep, `OtpCode`/`Session` pruning, upload size limit, `createListing` limit race fixed | this session | **Done** |
-| 17 | Remaining roadmap items (see Deferred below) | — | Not started |
+| 16 | Cleanup jobs + hardening: `ListingImage` sweep, `OtpCode`/`Session` pruning, upload size limit, `createListing` limit race fixed | `9a8c757` | Done |
+| 17 | Pagination for `listOrdersForBuyer`/`listOrdersForSeller`/`listListingsByOwner` | this session | **Done** |
+| 18 | Remaining roadmap items (see Deferred below) | — | Not started |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -654,6 +655,34 @@ out of it, all fixed this phase:
   systemic `toFixed(2)` money-rounding pattern in
   `src/modules/shipping/commission.ts`.
 
+## What Was Completed in Phase 17
+
+Closes the pagination gap Phase 16's audit found but deliberately left
+unfixed to keep that phase scoped:
+
+- **`listOrdersForBuyer`, `listOrdersForSeller`, `listListingsByOwner`**
+  (`src/modules/orders/orders.ts`, `src/modules/catalog/listings.ts`)
+  now follow the exact `{ items, page, totalPages, totalCount }` shape
+  and `DEFAULT_LIMIT`/`MAX_LIMIT` (20/100) clamp already used everywhere
+  else in this codebase (`listNotifications`, search, saved searches,
+  moderation's report queue, the pending-review queue) — the only three
+  holdouts, not a new pattern.
+- **New `UrlPagination` component** (`src/components/ui/UrlPagination.tsx`)
+  — a path-agnostic version of the existing `SearchPaginationClient`
+  pattern (which hardcodes `/search`), reused across the three newly-
+  paginated pages (`/orders`, `/dashboard/orders`, `/listings/mine`)
+  instead of writing three near-identical one-off wrappers.
+  `SearchPaginationClient`/`/search` were left untouched.
+- **Three API routes updated to match**: `GET /api/orders/buying`,
+  `GET /api/orders/selling`, `GET /api/listings/mine` now accept
+  `?page=`/`?limit=` and return the paginated shape. Confirmed via grep
+  this breaks no existing caller — none of the three are consumed by any
+  client-side code in this app today (the corresponding pages call the
+  module functions directly as Server Components); they exist purely as
+  part of the documented API surface for a future mobile client.
+- No schema change, no new routes, no product/business decision
+  involved — a pure technical consistency fix.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -684,31 +713,41 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 16 migrations applied — unchanged this phase (Phase 16 is a pure
-  cleanup-job/hardening fix with no schema change). Last migration added:
-  `20260830091324_add_user_email` (Phase 14). Schema at
+- 16 migrations applied — unchanged this phase (Phase 17 is a pure
+  service/API/UI pagination fix with no schema change). Last migration
+  added: `20260830091324_add_user_email` (Phase 14). Schema at
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
-## Tests & Results (Phase 16, all green)
+## Tests & Results (Phase 17, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
-- `npm run boundaries` — no violations (222 modules, 786 dependencies —
-  +2 for the new `src/jobs/listing-image-sweep.ts`/`auth-row-pruning.ts`).
-- `npm test` — **318/318 unit tests passing** across 41 files. New this
-  phase: `tests/jobs/listing-image-sweep.test.ts` (3),
-  `tests/jobs/auth-row-pruning.test.ts` (2), one new test in
-  `tests/jobs/image-processing.test.ts` (oversized-upload rejection,
-  asserting `getObject` is never called), and new
-  `tests/catalog/listings.test.ts` (3 — `createListing` had zero prior
-  unit test coverage; happy path, limit rejection, and a concurrency
-  regression test mirroring Phase 15's checkout race test, run 5x in
-  isolation to confirm non-flaky).
-- `npx playwright test` — **8/8 e2e specs passing**, all unmodified.
-- `npm run build` — clean, warning-free production build; no new routes.
+- `npm run boundaries` — no violations (223 modules, 792 dependencies —
+  +1 for the new `src/components/ui/UrlPagination.tsx`).
+- `npm test` — **326/326 unit tests passing** across 42 files. New this
+  phase: `tests/orders/orders.test.ts` (5 — pagination + per-user
+  scoping for both `listOrdersForBuyer`/`listOrdersForSeller`, clamping
+  an out-of-range limit), plus 3 new tests in
+  `tests/catalog/listings.test.ts` for `listListingsByOwner` (pagination
+  + totals, scoping/soft-delete exclusion, limit clamping).
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified —
+  including `store-management-flow.spec.ts`, which exercises
+  `/listings/mine` directly on its normal (single-page) path.
+- `npm run build` — clean, warning-free production build; no new routes;
+  `/orders`, `/dashboard/orders`, `/listings/mine` bundles grew slightly
+  for the new pagination control.
 - `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
   sync" (no schema change this phase, so this was a pure sanity check).
+
+### Tests & Results (Phase 16, for reference)
+
+- `npm test` — 318/318 unit tests passing across 41 files
+  (`tests/jobs/listing-image-sweep.test.ts` +3,
+  `tests/jobs/auth-row-pruning.test.ts` +2, one new
+  `image-processing.test.ts` test, 3 new `listings.test.ts` tests).
+- `npx playwright test` — 8/8 e2e specs passing, all unmodified.
+- `npm run build` — clean, warning-free, no new routes.
 
 ### Tests & Results (Phase 15, for reference)
 
@@ -801,17 +840,12 @@ runtime bug. Fixed by moving the fallback rate onto
 - ~~No pruning job for expired `OtpCode`/`Session` rows~~ — **resolved in
   Phase 16**: an hourly `auth-row-prune` job deletes both once past
   `expiresAt`.
-- **Three unbounded (unpaginated) list queries**: `listOrdersForBuyer`/
-  `listOrdersForSeller` (`src/modules/orders/orders.ts`) and
-  `listListingsByOwner` (`src/modules/catalog/listings.ts`) have no
-  `take`/`skip`, unlike every other list function in the codebase
-  (`search`, `notifications`, `moderation`, pending-review all use a
-  `DEFAULT_LIMIT`/`MAX_LIMIT` pattern). Found in Phase 16's audit — scoped
-  to the caller's own data (not an attacker-controlled cross-user
-  surface), so a growing performance problem, not a security bug. Not
-  fixed this phase: closing it properly means updating 3 service
-  functions, their 3 API routes, and their 3 frontend pages' consumption
-  pattern (list-all vs. paginate) — a larger, separate unit of work.
+- ~~Three unbounded (unpaginated) list queries: `listOrdersForBuyer`/
+  `listOrdersForSeller`/`listListingsByOwner`~~ — **resolved in Phase
+  17**: all three now follow the same `{ items, page, totalPages,
+  totalCount }`/`DEFAULT_LIMIT`(20)/`MAX_LIMIT`(100) pattern already used
+  everywhere else, with a matching `UrlPagination` control on their three
+  pages and updated API routes.
 - **`toFixed(2)`-based money rounding in `src/modules/shipping/commission.ts`**
   has the well-known IEEE-754 half-cent edge case. Found in Phase 16's
   audit; not a newly-introduced bug — every money value in this codebase
@@ -1185,6 +1219,30 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   introduced. Both moved to Known Issues/Deferred rather than folded in,
   keeping this phase completable in one clean pass.
 
+## Technical/Architecture Decisions (Phase 17)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- The three newly-paginated functions use the exact `{ items, page,
+  totalPages, totalCount }` shape and `DEFAULT_LIMIT`(20)/`MAX_LIMIT`(100)
+  clamp already established by `listNotifications`, search, saved
+  searches, and the moderation/pending-review queues — no new pattern
+  invented for three functions that happened to be the only holdouts.
+- A single new `UrlPagination` component, not three near-identical
+  one-off wrappers — `SearchPaginationClient` already solved "paginate
+  via the URL's `?page=` param" for `/search`, but hardcodes that path;
+  `UrlPagination` uses `usePathname()` instead so it works for any page.
+  `/search`/`SearchPaginationClient` were left untouched rather than
+  refactored onto the new component — that would have been unrelated
+  scope creep, not something this task required.
+- The three affected API routes' response shape changed (a bare
+  array/`{ orders }` → the paginated shape). Verified via grep this
+  breaks no caller: none of the three routes are consumed by any
+  client-side code in this app — the corresponding pages call the
+  module functions directly as Server Components. The routes exist
+  purely as part of the documented API surface for a future mobile
+  client (see `docs/ARCHITECTURE.md`).
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -1254,36 +1312,30 @@ None.
 
 ## Exact Next Action
 
-Phase 16 is committed and pushed (both branches kept in sync — see Git
+Phase 17 is committed and pushed (both branches kept in sync — see Git
 Safety in `CLAUDE.md` and this session's owner authorization to merge
 into `main`). Per the standing execution rule (one phase at a time,
 validate, stop for approval), **this session stops here**, awaiting
 direction on what to build next.
 
-**Important precedent, now confirmed twice**: Phase 15 found a real
-double-sell race a prior audit had missed and asked the next session to
-keep re-auditing rather than trust "nothing left" unchecked. Phase 16
-did exactly that and found four more genuine, previously-undocumented
-gaps (two of them already flagged as candidates, two entirely new: a
-real upload memory-exhaustion vector, and a `createListing` race of the
-exact same class Phase 15 had just finished hardening against
-elsewhere). **Two audits in a row have each found real things a prior
-pass missed — this is now a pattern, not a one-off.** Every future
-session must keep re-auditing with fresh eyes before assuming the
-roadmap below is complete.
+**Important precedent, now confirmed across three phases**: Phase 15
+found a real double-sell race a prior audit had missed; Phase 16
+re-audited and found four more genuine gaps; Phase 17 closed the one
+remaining genuinely-technical Deferred item from that audit
+(pagination) rather than leaving it to rot as a permanent "known but
+unfixed" entry. Every future session must keep re-auditing with fresh
+eyes rather than assuming the roadmap below is complete, and should
+treat a Deferred item explicitly scoped as "technical, no owner
+decision needed, just larger" as real backlog to eventually clear, not
+a place to park things indefinitely.
 
 Remaining candidates, none of them purely-technical-and-unstarted at
 this point:
 
-- **The two Deferred items this phase's audit found but didn't fix** (see
-  Known Issues → Deferred): pagination for `listOrdersForBuyer`/
-  `listOrdersForSeller`/`listListingsByOwner` (touches 3 service
-  functions + 3 API routes + 3 frontend pages), and the systemic
-  `toFixed(2)` money-rounding note (revisit only if real data shows
-  drift). The pagination item is genuinely technical, no owner decision
-  needed, and larger than a single-session drop-in fix — the most likely
-  next purely-technical unit of work if nothing higher-priority emerges
-  from a fresh audit.
+- **The systemic `toFixed(2)` money-rounding note** (see Known Issues →
+  Deferred, `src/modules/shipping/commission.ts`) — pre-existing
+  everywhere in the codebase, not a newly-introduced bug; revisit only
+  if real settlement data ever shows a discrepancy, not proactively.
 - **SMS gateway activation** — purely an owner action (pick a gateway,
   set `SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`); see
   `docs/DECISIONS.md`.
@@ -1307,7 +1359,7 @@ this point:
   owner-supplied credentials.
 
 A future session should re-run its own OODA audit (CLAUDE.md Section 4)
-from a fresh angle rather than just re-scan this list — two phases in a
-row are direct proof that doing so finds real things. Read this file +
+from a fresh angle rather than just re-scan this list — three phases in
+a row are direct proof that doing so finds real things. Read this file +
 `docs/*` fresh at the start of that session and confirm current git
 state matches this document before writing any code.

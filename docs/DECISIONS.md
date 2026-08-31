@@ -1013,3 +1013,41 @@ temporarily has one extra active listing, not a lost sale), but the
 same bug class, left unfixed would have been inconsistent with Phase
 15's own conclusion that this class of bug is worth taking seriously
 everywhere it appears, not just in the highest-profile instance.
+
+## Three "list my own data" queries were unbounded — paginated to match the rest of the codebase's convention
+
+`listOrdersForBuyer`, `listOrdersForSeller`, and `listListingsByOwner`
+were plain `findMany` calls with no `skip`/`take` at all — every other
+list query in this codebase (`listNotifications`, search, saved
+searches, moderation's report queue, the pending-review queue) already
+follows a `{ items, page, totalPages, totalCount }` shape with a
+`DEFAULT_LIMIT`/`MAX_LIMIT` clamp. These three were the only holdouts,
+found by the same Phase 15/16 audit process, not exploitable
+cross-user (each is scoped to the caller's own `buyerId`/`sellerId`/
+`ownerId`), but a real, growing performance problem for any long-lived
+active account with many orders or listings. Fixed by bringing all
+three in line with the established convention exactly — same shape,
+same clamp values (20 default / 100 max) already used elsewhere.
+
+The three Server Component pages (`/orders`, `/dashboard/orders`,
+`/listings/mine`) needed a page-based pagination control wired to the
+URL's `?page=` param, the same UX `/search` already has via
+`SearchPaginationClient`. Rather than write three near-identical
+one-off wrapper components (that file hardcodes `/search` as the target
+path), a single `UrlPagination` component
+(`src/components/ui/UrlPagination.tsx`) was added, using
+`usePathname()` instead of a hardcoded path so it works for any page.
+`SearchPaginationClient`/`/search` were left untouched — the existing,
+working pattern didn't need touching just to converge on the new
+shared component, and doing so would have been a scope-creeping
+refactor of something the task at hand didn't require changing.
+
+The three affected API routes (`/api/orders/buying`,
+`/api/orders/selling`, `/api/listings/mine`) changed their response
+shape (`{ orders: [...] }`/a bare array → `{ items, page, totalPages,
+totalCount }`) as part of this fix. Confirmed via grep this breaks no
+existing caller — none of the three routes are actually consumed by
+any client-side code in this app today (the corresponding pages are
+Server Components calling the module functions directly); they exist
+purely as part of the documented API surface for a future mobile
+client (see `docs/ARCHITECTURE.md`), which hasn't been built yet.

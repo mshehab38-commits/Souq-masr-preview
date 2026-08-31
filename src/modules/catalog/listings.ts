@@ -224,12 +224,31 @@ export async function getListingById(id: string, viewerId?: string, viewerRole?:
   return listing;
 }
 
-export async function listListingsByOwner(ownerId: string) {
-  return prisma.listing.findMany({
-    where: { ownerId, deletedAt: null },
-    orderBy: { createdAt: "desc" },
-    include: { images: { orderBy: { sortOrder: "asc" }, take: 1 } },
-  });
+const OWNER_LISTINGS_DEFAULT_LIMIT = 20;
+const OWNER_LISTINGS_MAX_LIMIT = 100;
+
+export interface ListListingsByOwnerFilter {
+  page?: number;
+  limit?: number;
+}
+
+export async function listListingsByOwner(ownerId: string, filter: ListListingsByOwnerFilter = {}) {
+  const limit = Math.min(Math.max(filter.limit || OWNER_LISTINGS_DEFAULT_LIMIT, 1), OWNER_LISTINGS_MAX_LIMIT);
+  const page = Math.max(filter.page || 1, 1);
+  const where = { ownerId, deletedAt: null };
+
+  const [items, totalCount] = await Promise.all([
+    prisma.listing.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      include: { images: { orderBy: { sortOrder: "asc" }, take: 1 } },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.listing.count({ where }),
+  ]);
+
+  return { items, page, totalPages: Math.max(1, Math.ceil(totalCount / limit)), totalCount };
 }
 
 export interface SellerStats {
