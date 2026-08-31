@@ -1285,3 +1285,95 @@ updating `src/app/profile/ProfileView.tsx`'s submit handler to read the
 new shape and to show a "you already have a pending request" message
 instead of prepending a visible duplicate row when `alreadyPending` is
 `true`.
+
+## Three more audit rounds (IDOR was already clean) — background-job idempotency, Paymob webhook duplicate-processing, notification reliability
+
+Per the standing "keep re-auditing with fresh eyes" precedent (Phases
+15-21), three more fresh audit passes ran, covering ground not yet
+checked this session. Two came back clean, confirmed by reading the
+actual code rather than trusting doc comments:
+
+- **Background-job idempotency**: every repeatable/queued job
+  (`listing-expiry`, `auth-row-pruning`, `search-indexing`) is either a
+  trivially idempotent guarded `updateMany`/`deleteMany`, or (for
+  `search-indexing`'s saved-search-match notifications) protected by a
+  real DB unique constraint + `P2002` catch (`claimSavedSearchNotification`),
+  not a check-then-act race. Confirmed working as designed.
+- **Paymob webhook duplicate-processing**: the webhook's only side
+  effect is a single atomically-guarded `updateMany` (`WHERE
+  paymentStatus: "PENDING"`) with no separate idempotency-key table
+  needed — a second delivery for an already-processed order matches
+  zero rows and no-ops, and the route always returns `200` regardless,
+  so Paymob won't retry a duplicate-safe no-op as a failure. No
+  double-`LedgerEntry`/`SellerPayout` risk, since the webhook itself
+  never creates either (those only happen via `transitionOrder`'s own,
+  separately-guarded transition).
+
+Two genuine, fixable gaps were found and fixed in this same pass:
+
+1. **Paymob HMAC comparison was not constant-time** (`paymob-provider.ts`).
+   A plain `!==` string comparison on a signature check is a — largely
+   theoretical, but real and free to fix — timing side-channel. Fixed
+   with `crypto.timingSafeEqual`, guarded by an explicit length check
+   first (`timingSafeEqual` throws, rather than returning `false`, on a
+   length mismatch — an attacker-controlled header of the wrong length
+   must never reach it).
+2. **`processListingImage`'s three status-setting writes had no state
+   guard** (`src/jobs/image-processing.ts`). If the whole worker
+   process is down for over an hour with a non-empty image-processing
+   backlog (an outage/incident, not an ordinary retry), the
+   `listing-image-sweep` job's 1-hour cutoff can flip a backlogged
+   row's status to `REJECTED` before its original, never-actually-failed
+   job finally runs — and that job would then unconditionally overwrite
+   the sweep's `REJECTED` verdict back to `READY` (or `REJECTED` again,
+   redundantly). Fixed by changing all three
+   `prisma.listingImage.update` calls to `updateMany` guarded on
+   `status: "PENDING"`, matching this codebase's established
+   guarded-write pattern (order transitions, checkout's listing
+   reservation) — a late-finishing job now correctly no-ops once the
+   sweep has already decided.
+
+A third, more consequential gap was found in notification delivery,
+also fixed:
+
+3. **`createNotification`'s own `Notification`-row write could throw
+   past every one of its 4 real call sites** (`checkout.ts`'s
+   `createOrder`, `transitions.ts`'s `notifyCounterparty`,
+   `reports.ts`'s `resolveReport`, `verification.ts`'s
+   `reviewVerificationRequest`) — none of them wraps the call in its own
+   try/catch, since the existing doc comment already promised "a
+   failure anywhere in this block is logged and swallowed," but that
+   promise only actually covered the SMS/email dispatch, not the
+   `Notification` row's own `prisma.notification.create()` call. A
+   transient DB blip there, arriving after the real business operation
+   (an order, a status transition, a report resolution, a verification
+   decision) had already committed, would propagate uncaught all the way
+   to `withApiHandler`'s generic 500 — reporting a **false failure** to
+   the client for an operation that had, in fact, already succeeded,
+   while silently losing that one notification with no retry. Fixed by
+   wrapping the row creation itself in the same "log and swallow"
+   contract already documented and already applied to the SMS/email
+   half — `createNotification` now returns `null` (never throws) on a
+   DB-write failure. No caller inspects the return value today, so this
+   is a non-breaking contract change.
+
+   A related, narrower consequence for the saved-search-match path
+   specifically (`notifyMatchingSavedSearches`): its
+   claim-then-notify pattern claims a `SavedSearchNotification` row
+   *before* calling `createNotification`, and the claim is a permanent,
+   non-TTL fact (Phase 13's decision — deleting it on the report-flagging
+   analog would reopen the exact repeat-notification bug that pattern
+   fixes). Before this fix, a `Notification`-write failure for one
+   already-claimed user would throw, fail the whole BullMQ job, and
+   trigger a retry that couldn't help that user anyway (their claim
+   already exists) while potentially re-running the loop for others.
+   After this fix, that same failure is silently swallowed inside
+   `createNotification` — the job completes normally, every other
+   user in the batch is unaffected, and only that one user's
+   notification is lost. This is a strictly more benign failure mode
+   than before (no wasted job retries, no risk of the whole job
+   cascading into failure), and is accepted as a documented trade-off
+   consistent with this codebase's existing "notifications are
+   best-effort, never allowed to break something else" design — not
+   worth building transactional claim+notify machinery to close a
+   narrow, low-severity, silent-loss edge case.

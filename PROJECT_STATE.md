@@ -7,15 +7,20 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-31 (Phase 21 completion)
+Last updated: 2026-08-31 (Phase 22 completion)
 
 ## Current Status
 
-**Phase 20 (twelve composite database indexes closing filter+sort query
-gaps a fresh audit found) and Phase 21 (a shared rate-limit utility
-wired into the three most abuse-prone write endpoints, plus a
-root-cause verification-request pending-dedupe fix) are both COMPLETE,
-validated, committed, and pushed.**
+**Phases 20, 21, and 22 are all COMPLETE, validated, committed, and
+pushed**: Phase 20 (twelve composite database indexes), Phase 21 (a
+shared rate-limit utility wired into the three most abuse-prone write
+endpoints, plus a root-cause verification-request pending-dedupe fix),
+and Phase 22 (three more fixes from a further audit round: a
+timing-safe Paymob webhook HMAC comparison, a state guard closing a
+worker-outage race in `processListingImage`, and isolating
+`createNotification`'s own DB-write failure from every caller so a
+transient blip can never report a false failure for an already-
+succeeded business operation).
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -71,7 +76,8 @@ tasks to be framed across disciplines).
 | 18 | Pagination for `listFavoriteListings`/`getVerificationRequests`, the two more unbounded "list my own data" queries a follow-up audit found | this session | Done |
 | 19 | Pre-publish-review admin toggle: `requirePrePublishReview` on `PlatformSettings`, scaffolding only, default off | `03b16dc` | Done |
 | 20 | Twelve composite DB indexes closing filter+sort query gaps (`User`/`VerificationRequest`/`Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`) | `a2911be` | Done |
-| 21 | Rate limiting (`src/lib/rate-limit.ts`) on `POST /api/listings`, image upload-URL minting, bulk listing actions + verification-request pending-dedupe | this session | **Done** |
+| 21 | Rate limiting (`src/lib/rate-limit.ts`) on `POST /api/listings`, image upload-URL minting, bulk listing actions + verification-request pending-dedupe | `e7d0a12` | Done |
+| 22 | Timing-safe Paymob webhook HMAC, `processListingImage` sweep-race guard, `createNotification` DB-write failure isolation | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -829,6 +835,50 @@ across all 55 API routes, which came back clean — no gap found).
 - No product/business decision involved — all three threshold values
   are technical anti-abuse defaults, not commercial policy.
 
+## What Was Completed in Phase 22
+
+Per the owner's explicit continuation directive, three more fresh
+audits ran on ground not yet checked this session: background-job
+idempotency/retry safety, Paymob webhook duplicate-processing
+protection, and notification-delivery reliability. Two came back
+clean — background-job idempotency (every job is either a trivially
+idempotent guarded write, or, for saved-search-match notifications,
+protected by a real DB unique constraint + `P2002` catch) and Paymob
+webhook duplicate-processing (a single atomically-guarded `updateMany`
+is the webhook's entire side effect, so a duplicate delivery is a
+guaranteed no-op with no separate idempotency table needed) — both
+confirmed by reading the actual code, not assumed from documentation.
+
+Three real, fixable gaps were found and fixed:
+
+- **Paymob webhook HMAC comparison made timing-safe**
+  (`src/modules/payments/paymob-provider.ts`) — was a plain `!==`
+  string comparison; now uses `crypto.timingSafeEqual` with an explicit
+  length check first (which itself would throw on a length mismatch).
+- **`processListingImage`'s three status-setting writes now guard on
+  `status: "PENDING"`** (`src/jobs/image-processing.ts`, via
+  `updateMany` instead of `update`) — closes a real, if narrow, race
+  where a worker-outage backlog could let a job resurrect a row the
+  `listing-image-sweep` had already correctly rejected.
+- **`createNotification`'s own database write is now isolated from
+  every caller** (`src/modules/notifications/notifications.ts`) — a
+  transient failure writing the `Notification` row itself (not just the
+  SMS/email mirrors, which were already protected) previously
+  propagated uncaught through `createOrder`, `notifyCounterparty`,
+  `resolveReport`, and `reviewVerificationRequest` — all of which call
+  it after their real business operation has already committed — into
+  `withApiHandler`'s generic 500. That reported a **false failure** to
+  the client for an operation that had actually already succeeded,
+  while silently losing that one notification. Now returns `null`
+  instead of throwing; no caller inspects the return value, so this is
+  non-breaking.
+- A related, lower-severity, narrower consequence for the saved-search
+  claim-then-notify pattern specifically was investigated and accepted
+  as a documented trade-off rather than separately fixed — see
+  `docs/DECISIONS.md`.
+- No product/business decision involved — three purely technical
+  correctness fixes.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -859,7 +909,7 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 18 migrations applied — unchanged this phase (Phase 21 is a pure
+- 18 migrations applied — unchanged this phase (Phase 22 is a pure
   application-code change, no schema change). Last migration:
   `20260831192836_add_composite_indexes_for_pagination_queries` (Phase
   20 — 12 composite indexes across `User`/`VerificationRequest`/
@@ -867,10 +917,29 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
-## Tests & Results (Phase 21, all green)
+## Tests & Results (Phase 22, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
+- `npm run boundaries` — no violations (224 modules, 797 dependencies —
+  unchanged; pure code fixes to existing files, no new module files).
+- `npm test` — **354/354 unit tests passing** across 46 files. New this
+  phase: a wrong-length-HMAC case in `tests/payments/paymob-webhook.test.ts`
+  (exercises the new length-guard branch directly, confirming
+  `timingSafeEqual` is never reached with mismatched buffer lengths), a
+  full-success-path regression test in `tests/jobs/image-processing.test.ts`
+  (seeds a `REJECTED` row, feeds it a genuinely valid image, confirms
+  processing still respects the sweep's verdict rather than resurrecting
+  it to `READY`), and a real-FK-violation test in
+  `tests/notifications/notifications.test.ts` (a nonexistent `userId`
+  triggers a genuine DB constraint failure, confirming `createNotification`
+  returns `null` instead of throwing).
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified.
+- `npm run build` — clean, warning-free production build; no new
+  routes.
+
+### Tests & Results (Phase 21, for reference)
+
 - `npm run boundaries` — no violations (224 modules, 797 dependencies —
   +1 module for the new `src/lib/rate-limit.ts`, +3 dependencies for its
   three new call sites).
@@ -1586,6 +1655,27 @@ See `docs/DECISIONS.md` for full rationale. Summary:
 - A separate, fresh IDOR/authorization audit run in the same session
   found no gap across all 55 API routes.
 
+## Technical/Architecture Decisions (Phase 22)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- Paymob's HMAC comparison now uses `crypto.timingSafeEqual` with an
+  explicit length check first (which itself would throw on mismatch).
+- `processListingImage`'s three status-setting writes now guard on
+  `status: "PENDING"` via `updateMany`, matching this codebase's
+  established guarded-write pattern elsewhere.
+- `createNotification` now isolates its own `Notification`-row write
+  failure the same way its SMS/email dispatch was already isolated —
+  returns `null` instead of throwing; no caller inspects the return
+  value, so this is non-breaking.
+- The saved-search claim-then-notify pattern's narrower, lower-severity
+  consequence (a claimed-but-unsent notification stays silently lost)
+  was investigated and accepted as a documented trade-off rather than
+  fixed with transactional claim+notify machinery.
+- Background-job idempotency and Paymob webhook duplicate-processing
+  were both independently confirmed already correct — no changes
+  needed there.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -1671,22 +1761,32 @@ None.
 
 ## Exact Next Action
 
-Phases 20 and 21 are both committed and pushed (both branches kept in
-sync — see Git Safety in `CLAUDE.md` and this session's owner
-authorization to merge into `main`). The prior session's own "no
-purely-technical, unstarted candidate remains" conclusion was re-tested
-this session via three fresh audits (IDOR/authorization, rate limiting,
-DB indexes) — the IDOR audit came back clean, but the rate-limiting and
-DB-index audits each found real, genuine, purely-technical gaps, now
-both closed. Per the owner's explicit continuation directive this
-session, the next step is **another fresh audit round targeting areas
-not yet checked this session**: background-job idempotency/retry
-safety, payment-webhook duplicate-processing protection, and
-notification-delivery reliability — continuing to implement any
-genuine owner-independent technical gap found, the same discipline that
-has now held across six consecutive phases.
+Phases 20, 21, and 22 are all committed and pushed (both branches kept
+in sync — see Git Safety in `CLAUDE.md` and this session's owner
+authorization to merge into `main`). This session ran five fresh audits
+total, per the owner's explicit continuation directive to keep
+re-auditing and implementing every owner-independent technical gap
+found rather than stopping at the first "nothing left" conclusion:
+IDOR/authorization, rate limiting, DB indexes, background-job
+idempotency, Paymob webhook duplicate-processing, and
+notification-delivery reliability. Two came back clean
+(IDOR/authorization; background-job idempotency; Paymob webhook
+duplicate-processing — three of the six, all confirmed by reading the
+actual code). The other three each found real, genuine gaps, all now
+fixed and closed (Phase 20: DB indexes; Phase 21: rate limiting +
+verification-request dedupe; Phase 22: Paymob HMAC timing safety, an
+image-processing sweep-race guard, and notification DB-write isolation).
 
-**Important precedent, now confirmed across seven phases**: Phase 15
+A future session should run its own fresh audit round from an angle not
+yet covered this session — candidates not yet checked include: N+1
+query patterns in list/detail endpoints, session/cookie security flags,
+CSRF coverage completeness (spot-checked but not exhaustively
+re-verified this session), frontend authorization-assumption leaks
+(does any client-rendered UI element reveal data a stricter
+server-side check would hide), and admin-audit-log completeness across
+every mutating admin action.
+
+**Important precedent, now confirmed across eight phases**: Phase 15
 found a real double-sell race a prior audit had missed; Phase 16
 re-audited and found four more genuine gaps; Phase 17 closed the one
 remaining genuinely-technical Deferred item from that audit
@@ -1695,11 +1795,14 @@ the only holdouts" conclusion found two more; Phase 19 closed the
 scaffolding half of the one remaining product-decision item; Phase 20's
 own re-audit of "nothing technical left" found twelve missing composite
 indexes; Phase 21 closed the rate-limiting gap the same audit round
-found. Every future session must keep re-auditing with fresh eyes
-rather than assuming the roadmap below is complete, and should treat a
-Deferred item explicitly scoped as "technical, no owner decision
-needed, just larger" as real backlog to eventually clear, not a place
-to park things indefinitely.
+found; Phase 22's further audit round found three more real gaps
+(timing-safe HMAC, a job-race guard, notification-failure isolation)
+even after two of three prior audit rounds had already come back clean.
+Every future session must keep re-auditing with fresh eyes rather than
+assuming the roadmap below is complete, and should treat a Deferred
+item explicitly scoped as "technical, no owner decision needed, just
+larger" as real backlog to eventually clear, not a place to park things
+indefinitely.
 
 **SMS gateway, Email gateway, Sentry**: all three already have complete,
 tested technical scaffolding (Phases 8, 11, 14) — a vendor-agnostic HTTP

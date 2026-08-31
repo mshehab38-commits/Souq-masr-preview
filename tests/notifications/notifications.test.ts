@@ -38,6 +38,19 @@ describe("createNotification / listNotifications", () => {
     expect(result.items[0]!.readAt).toBeNull();
   });
 
+  it("returns null instead of throwing if the notification row's own write fails, so a caller's already-committed operation is never reported as failed", async () => {
+    // A nonexistent userId violates the real FK constraint on Notification —
+    // a genuine DB-level failure, not a mock, exercising the exact class of
+    // error (a transient/unexpected write failure) this guard protects
+    // against.
+    const result = await createNotification({
+      userId: "nonexistent-user-id-00000000000000",
+      type: "NEW_ORDER",
+      title: "لن يُحفظ",
+    });
+    expect(result).toBeNull();
+  });
+
   it("orders notifications newest first", async () => {
     const user = await makeUser();
     await createNotification({ userId: user.id, type: "NEW_ORDER", title: "أول" });
@@ -52,7 +65,7 @@ describe("createNotification / listNotifications", () => {
     const user = await makeUser();
     const n1 = await createNotification({ userId: user.id, type: "NEW_ORDER", title: "مقروء" });
     await createNotification({ userId: user.id, type: "NEW_ORDER", title: "غير مقروء" });
-    await markAsRead(n1.id, user.id);
+    await markAsRead(n1!.id, user.id);
 
     const result = await listNotifications(user.id, { unreadOnly: true });
     expect(result.items).toHaveLength(1);
@@ -99,8 +112,8 @@ describe("createNotification SMS mirror", () => {
       title: "تمت إزالة إعلانك",
     });
 
-    expect(notification.id).toBeDefined();
-    const stored = await prisma.notification.findUniqueOrThrow({ where: { id: notification.id } });
+    expect(notification!.id).toBeDefined();
+    const stored = await prisma.notification.findUniqueOrThrow({ where: { id: notification!.id } });
     expect(stored.title).toBe("تمت إزالة إعلانك");
     sendMessage.mockRestore();
   });
@@ -152,8 +165,8 @@ describe("createNotification email mirror", () => {
       title: "تمت إزالة إعلانك",
     });
 
-    expect(notification.id).toBeDefined();
-    const stored = await prisma.notification.findUniqueOrThrow({ where: { id: notification.id } });
+    expect(notification!.id).toBeDefined();
+    const stored = await prisma.notification.findUniqueOrThrow({ where: { id: notification!.id } });
     expect(stored.title).toBe("تمت إزالة إعلانك");
     sendNotification.mockRestore();
   });
@@ -181,7 +194,7 @@ describe("getUnreadCount", () => {
     const user = await makeUser();
     const n1 = await createNotification({ userId: user.id, type: "NEW_ORDER", title: "a" });
     await createNotification({ userId: user.id, type: "NEW_ORDER", title: "b" });
-    await markAsRead(n1.id, user.id);
+    await markAsRead(n1!.id, user.id);
 
     expect(await getUnreadCount(user.id)).toBe(1);
   });
@@ -194,12 +207,12 @@ describe("markAsRead", () => {
     const user = await makeUser();
     const notification = await createNotification({ userId: user.id, type: "NEW_ORDER", title: "a" });
 
-    expect(await markAsRead(notification.id, user.id)).toBe(true);
-    const updated = await prisma.notification.findUniqueOrThrow({ where: { id: notification.id } });
+    expect(await markAsRead(notification!.id, user.id)).toBe(true);
+    const updated = await prisma.notification.findUniqueOrThrow({ where: { id: notification!.id } });
     expect(updated.readAt).not.toBeNull();
 
     // Second call: already read, so the scoped update affects zero rows.
-    expect(await markAsRead(notification.id, user.id)).toBe(false);
+    expect(await markAsRead(notification!.id, user.id)).toBe(false);
   });
 
   it("refuses to mark another user's notification as read", async () => {
@@ -207,8 +220,8 @@ describe("markAsRead", () => {
     const attacker = await makeUser();
     const notification = await createNotification({ userId: owner.id, type: "NEW_ORDER", title: "a" });
 
-    expect(await markAsRead(notification.id, attacker.id)).toBe(false);
-    const unchanged = await prisma.notification.findUniqueOrThrow({ where: { id: notification.id } });
+    expect(await markAsRead(notification!.id, attacker.id)).toBe(false);
+    const unchanged = await prisma.notification.findUniqueOrThrow({ where: { id: notification!.id } });
     expect(unchanged.readAt).toBeNull();
   });
 });

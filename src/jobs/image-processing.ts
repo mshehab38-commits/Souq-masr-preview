@@ -40,13 +40,24 @@ const VARIANTS = [
 // against, since the worker runs at concurrency 4.
 const MAX_LISTING_IMAGE_BYTES = 15 * 1024 * 1024;
 
+// Every write in this function is guarded on the row still being PENDING —
+// via updateMany rather than update, matching this codebase's established
+// guarded-write pattern elsewhere (order transitions, checkout's listing
+// reservation). This closes a real race with listing-image-sweep.ts: if the
+// whole worker process is down for over an hour with a backlog of
+// never-yet-attempted image-processing jobs, the sweep's cutoff can flip a
+// row to REJECTED before its backlogged job finally runs — without this
+// guard, that job would then unconditionally overwrite the sweep's decision
+// back to READY/REJECTED. A no-op updateMany (0 rows matched) leaves the
+// sweep's REJECTED verdict standing, which is the correct outcome. See
+// docs/DECISIONS.md.
 export async function processListingImage(data: ImageProcessingJobData): Promise<void> {
   const storage = getStorageProvider();
 
   const size = await storage.getObjectSize(data.originalKey);
   if (size > MAX_LISTING_IMAGE_BYTES) {
-    await prisma.listingImage.update({
-      where: { id: data.listingImageId },
+    await prisma.listingImage.updateMany({
+      where: { id: data.listingImageId, status: "PENDING" },
       data: { status: "REJECTED" },
     });
     logger.warn("Rejected upload: exceeds max size", { listingImageId: data.listingImageId, size });
@@ -56,8 +67,8 @@ export async function processListingImage(data: ImageProcessingJobData): Promise
   const original = await storage.getObject(data.originalKey);
 
   if (!detectImageMime(original)) {
-    await prisma.listingImage.update({
-      where: { id: data.listingImageId },
+    await prisma.listingImage.updateMany({
+      where: { id: data.listingImageId, status: "PENDING" },
       data: { status: "REJECTED" },
     });
     logger.warn("Rejected upload: not a recognized image format", {
@@ -84,8 +95,8 @@ export async function processListingImage(data: ImageProcessingJobData): Promise
     variantUrls[variant.name] = storage.getPublicUrl(key);
   }
 
-  await prisma.listingImage.update({
-    where: { id: data.listingImageId },
+  await prisma.listingImage.updateMany({
+    where: { id: data.listingImageId, status: "PENDING" },
     data: {
       thumbnailUrl: variantUrls.thumbnail,
       mediumUrl: variantUrls.medium,

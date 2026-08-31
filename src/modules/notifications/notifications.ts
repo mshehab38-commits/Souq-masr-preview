@@ -34,16 +34,36 @@ export interface CreateNotificationInput {
 // swallowed, never allowed to make notification creation itself fail —
 // the in-app row is the source of truth; SMS/email are delivery channels
 // on top of it, not dependencies.
+//
+// The in-app row's own write is likewise never allowed to throw past this
+// function. Every call site (checkout, an order-status transition, a
+// moderation decision, a verification review) awaits this directly,
+// without its own try/catch, after its real business operation has
+// already committed — a transient DB blip on this write alone must never
+// surface as a false failure response for an operation that actually
+// succeeded. On failure this returns null instead of a Notification row;
+// no caller inspects the return value, so this is a safe, non-breaking
+// contract. See docs/DECISIONS.md.
 export async function createNotification(input: CreateNotificationInput) {
-  const notification = await prisma.notification.create({
-    data: {
+  let notification;
+  try {
+    notification = await prisma.notification.create({
+      data: {
+        userId: input.userId,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        link: input.link,
+      },
+    });
+  } catch (error) {
+    logger.error("Failed to create notification row", {
       userId: input.userId,
       type: input.type,
-      title: input.title,
-      body: input.body,
-      link: input.link,
-    },
-  });
+      error: String(error),
+    });
+    return null;
+  }
 
   try {
     const user = await prisma.user.findUnique({
