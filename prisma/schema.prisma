@@ -426,6 +426,17 @@ model PlatformSettings {
   // Null = OWNER CONFIGURATION REQUIRED.
   paymentProcessingFeeBearer PaymentFeeBearer?
 
+  // When true, every new listing is created at PENDING_REVIEW instead of
+  // ACTIVE and must be approved by a moderator before going live (Phase
+  // 19). Unlike the fields above, this is a genuine boolean toggle, not a
+  // "value the owner hasn't set yet" — there is no meaningful third state
+  // for a switch, so it's non-nullable with an honest, safe default of
+  // false (today's existing behavior: publish straight to ACTIVE), rather
+  // than the nullable-fails-open pattern used for a price/percentage.
+  // Deliberately not flipped to true by default — see docs/DECISIONS.md
+  // and PROJECT_STATE.md's OWNER DECISION REQUIRED section.
+  requirePrePublishReview Boolean @default(false)
+
   updatedAt DateTime @updatedAt
   updatedBy String?
 

@@ -12,7 +12,7 @@ export default async function ProfilePage() {
     redirect("/login");
   }
 
-  const verificationRequests = await getVerificationRequests(user.id);
+  const { items: verificationRequests } = await getVerificationRequests(user.id);
 
   return (
     <ProfileView

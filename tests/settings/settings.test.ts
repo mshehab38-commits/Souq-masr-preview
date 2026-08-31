@@ -21,7 +21,12 @@ describe("settings module", () => {
     // other test files never inherit a limit/bearer this suite set.
     await prisma.platformSettings.updateMany({
       where: { id: "singleton" },
-      data: { freeListingActiveLimit: null, paymentProcessingFeeBearer: null, updatedBy: null },
+      data: {
+        freeListingActiveLimit: null,
+        paymentProcessingFeeBearer: null,
+        requirePrePublishReview: false,
+        updatedBy: null,
+      },
     });
     await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
     createdUserIds.length = 0;
@@ -32,6 +37,19 @@ describe("settings module", () => {
     expect(settings.id).toBe("singleton");
     expect(settings.freeListingActiveLimit).toBeNull();
     expect(settings.paymentProcessingFeeBearer).toBeNull();
+  });
+
+  it("defaults requirePrePublishReview to false for a never-configured singleton (a real default, not fail-open null)", async () => {
+    const settings = await getPlatformSettings();
+    expect(settings.requirePrePublishReview).toBe(false);
+  });
+
+  it("lets an admin turn requirePrePublishReview on independently of other settings", async () => {
+    const admin = await makeAdmin();
+    await updatePlatformSettings(admin.id, { freeListingActiveLimit: 10 });
+    const updated = await updatePlatformSettings(admin.id, { requirePrePublishReview: true });
+    expect(updated.requirePrePublishReview).toBe(true);
+    expect(updated.freeListingActiveLimit).toBe(10);
   });
 
   it("returns the same singleton row on repeated reads, not a new one each time", async () => {

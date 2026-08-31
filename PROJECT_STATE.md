@@ -7,14 +7,14 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-31 (Phase 17 completion)
+Last updated: 2026-08-31 (Phase 19 completion)
 
 ## Current Status
 
-**Phase 17 (Pagination for the three previously-unbounded "list my own
-data" queries — `listOrdersForBuyer`, `listOrdersForSeller`,
-`listListingsByOwner` — brought in line with this codebase's existing
-pagination convention) is COMPLETE, validated, committed, and
+**Phase 18 (closing two more unbounded "list my own data" queries a
+fresh audit found beyond Phase 17's three) and Phase 19 (a
+`requirePrePublishReview` admin toggle, scaffolding only, default off —
+zero live behavior change) are both COMPLETE, validated, committed, and
 pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
@@ -67,8 +67,9 @@ tasks to be framed across disciplines).
 | 14 | Email notification delivery: `EmailProvider` abstraction, optional `User.email` profile field, concurrent SMS+email dispatch | `d201c59` | Done |
 | 15 | Concurrency-safety hardening: checkout double-sell race fixed, order-transition race fixed, CI missing Redis service fixed, `payments` module test coverage added | `5397d89` | Done |
 | 16 | Cleanup jobs + hardening: `ListingImage` sweep, `OtpCode`/`Session` pruning, upload size limit, `createListing` limit race fixed | `9a8c757` | Done |
-| 17 | Pagination for `listOrdersForBuyer`/`listOrdersForSeller`/`listListingsByOwner` | this session | **Done** |
-| 18 | Remaining roadmap items (see Deferred below) | — | Not started |
+| 17 | Pagination for `listOrdersForBuyer`/`listOrdersForSeller`/`listListingsByOwner` | `4d47aad` | Done |
+| 18 | Pagination for `listFavoriteListings`/`getVerificationRequests`, the two more unbounded "list my own data" queries a follow-up audit found | this session | Done |
+| 19 | Pre-publish-review admin toggle: `requirePrePublishReview` on `PlatformSettings`, scaffolding only, default off | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -683,6 +684,78 @@ unfixed to keep that phase scoped:
 - No schema change, no new routes, no product/business decision
   involved — a pure technical consistency fix.
 
+## What Was Completed in Phase 18
+
+A fresh audit (explicitly re-checking rather than trusting Phase 17's
+own "these three were the only holdouts" conclusion — the standing
+lesson from Phases 15-17) found two more genuinely unbounded "list my
+own data" queries:
+
+- **`listFavoriteListings`** (`src/modules/catalog/favorites.ts`) and
+  **`getVerificationRequests`** (`src/modules/identity/verification.ts`)
+  now follow the same `{ items, page, totalPages, totalCount }` shape
+  and `DEFAULT_LIMIT`/`MAX_LIMIT` (20/100) clamp as every other list
+  query in this codebase. `getVerificationRequests`'s sibling in the
+  same file, `listVerificationRequests` (the admin queue), was already
+  in this shape — a ready-made template.
+- **`GET /api/favorites`** and **`GET /api/verification-requests`** now
+  accept `?page=`/`?limit=` and return the paginated shape. Confirmed
+  via grep this breaks no caller: `GET /api/favorites` has zero UI
+  consumers (favorites are only toggled via a heart button on a
+  listing's detail page — same "documented API surface for a future
+  mobile client" situation as Phase 17's three routes);
+  `GET /api/verification-requests` and `src/app/profile/page.tsx`'s
+  direct call were both updated to destructure `{ items }`.
+- **No pagination UI added for verification requests** — deliberately:
+  a user's own request count is structurally bounded to a handful over
+  an account's lifetime, so a `UrlPagination` control would be
+  over-engineering. `/profile` continues to render the full (small)
+  first page.
+- Two further findings from the same audit are recorded as deliberately
+  **deferred**, not fixed, since they're a different risk profile (small
+  admin-managed reference tables / a separate admin-only concern, not
+  user-generated "list my own data"): `GET /api/admin/shipping-companies`
+  and `GET /api/admin/plans` are unbounded; `GET /api/admin/ledger` is
+  capped at 50 rows with no further page. See Known Issues → Deferred.
+- No schema change, no new routes, no product/business decision
+  involved — a pure technical consistency fix, same class as Phase 17.
+
+## What Was Completed in Phase 19
+
+Scaffolding for mandatory pre-publish moderation, per the owner's
+explicit answer when asked directly: build the technical capability,
+do not flip the live default.
+
+- **`PlatformSettings.requirePrePublishReview Boolean @default(false)`**
+  (migration `20260831183256_add_require_pre_publish_review`) — the
+  first plain boolean toggle in this model, deliberately non-nullable
+  (unlike every other field in it) since a switch has no meaningful
+  third "unconfigured" state. Default `false` = today's existing
+  behavior, unchanged.
+- **`createListing`** (`src/modules/catalog/listings.ts`) reads the
+  setting once via `getPlatformSettings()` and creates the listing at
+  `PENDING_REVIEW` instead of `ACTIVE` when it's `true`. `expiresAt` is
+  set immediately either way — the deliberate choice that let this ship
+  with **zero changes** to the Phase 10 pending-review queue
+  (`listPendingReviewListings`/`decidePendingListing`); a toggle-on
+  listing flows through the exact same admin queue as a report-driven
+  flag.
+- **Admin settings API + UI**: `PATCH /api/admin/settings` accepts
+  `requirePrePublishReview: boolean`; `/admin/settings` has a new
+  checkbox with an explanatory hint showing the current state.
+- **Two Arabic copy fixes**, narrowly caused by this feature: the
+  pending-review queue's approve button ("الموافقة وإعادة النشر" →
+  "الموافقة والنشر" — dropping "re-" since a toggle-on listing was
+  never live before) and the approval notification (dropped "مجددًا" /
+  "again" for the same reason). The e2e spec asserting the old button
+  text (`e2e/pending-review-flow.spec.ts`) was updated to match.
+- **No live behavior change**: the toggle defaults to `false`, and
+  nothing in this phase flips it. New listings continue to publish
+  straight to `ACTIVE` exactly as before, unless and until an admin
+  explicitly opts in via `/admin/settings`. The decision to actually
+  turn it on for the live marketplace remains open and is the owner's
+  alone — this phase only makes the capability available.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -713,16 +786,55 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 16 migrations applied — unchanged this phase (Phase 17 is a pure
-  service/API/UI pagination fix with no schema change). Last migration
-  added: `20260830091324_add_user_email` (Phase 14). Schema at
-  `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
-  documentation.
+- 17 migrations applied. New this phase (Phase 19):
+  `20260831183256_add_require_pre_publish_review` (adds
+  `PlatformSettings.requirePrePublishReview`). Phases 17-18 made no
+  schema change. Schema at `prisma/schema.prisma`. See
+  `docs/DATABASE.md` for full entity documentation.
 
-## Tests & Results (Phase 17, all green)
+## Tests & Results (Phase 19, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
+- `npm run boundaries` — no violations (223 modules, 794 dependencies —
+  +1 for `catalog`'s new import of `settings/service.ts`, no new module
+  files).
+- `npm test` — **337/337 unit tests passing** across 44 files. New this
+  phase: 2 tests in `tests/settings/settings.test.ts`
+  (`requirePrePublishReview` defaults to `false`; an admin can turn it
+  on independently of other settings) and 3 tests in
+  `tests/catalog/listings.test.ts` (toggle-off regression proof —
+  `createListing` still creates `ACTIVE`; toggle-on creates
+  `PENDING_REVIEW` with a real `expiresAt`; a toggle-on listing flows
+  through `listPendingReviewListings`/`decidePendingListing` to `ACTIVE`
+  with `expiresAt` intact, unchanged).
+- `npx playwright test` — **8/8 e2e specs passing**. One spec updated
+  to match this phase's copy fix (`e2e/pending-review-flow.spec.ts`'s
+  approve-button selector: "الموافقة وإعادة النشر" →
+  "الموافقة والنشر") — caught by a full e2e re-run before this phase's
+  final commit, not shipped broken.
+- `npm run build` — clean, warning-free production build; no new
+  routes.
+- `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
+  sync" after the named migration above.
+
+### Tests & Results (Phase 18, for reference)
+
+- `npm run boundaries` — no violations (223 modules, 793 dependencies —
+  +1 dependency, no new module files).
+- `npm test` — **332/332 unit tests passing** across 44 files. New this
+  phase: `tests/catalog/favorites.test.ts` (3 — pagination + totals,
+  per-user scoping, limit clamping for `listFavoriteListings`), plus a
+  new `tests/identity/verification.test.ts` (3 — the same coverage for
+  `getVerificationRequests`).
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified —
+  including `store-management-flow.spec.ts`.
+- `npm run build` — clean, warning-free production build; no new routes.
+- `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
+  sync" (no schema change this phase, so this was a pure sanity check).
+
+### Tests & Results (Phase 17, for reference)
+
 - `npm run boundaries` — no violations (223 modules, 792 dependencies —
   +1 for the new `src/components/ui/UrlPagination.tsx`).
 - `npm test` — **326/326 unit tests passing** across 42 files. New this
@@ -846,6 +958,22 @@ runtime bug. Fixed by moving the fallback rate onto
   totalCount }`/`DEFAULT_LIMIT`(20)/`MAX_LIMIT`(100) pattern already used
   everywhere else, with a matching `UrlPagination` control on their three
   pages and updated API routes.
+- ~~Two more unbounded (unpaginated) list queries found by a follow-up
+  audit: `listFavoriteListings`/`getVerificationRequests`~~ — **resolved
+  in Phase 18**: both now follow the same pagination shape/clamp. No
+  `UrlPagination` UI was added for verification requests (structurally
+  bounded row count per user); favorites still has zero UI consumer,
+  same as Phase 17's three routes before this fix.
+- **`GET /api/admin/shipping-companies` and `GET /api/admin/plans` are
+  unbounded** (found in the same Phase 18 audit). Deliberately not
+  fixed: these are small, admin-managed reference tables, not
+  user-generated "list my own data" — a different growth pattern and
+  risk profile than everything else in this pagination thread. Revisit
+  only if either table's row count becomes genuinely large in practice.
+- **`GET /api/admin/ledger` is capped at 50 rows with no further page**
+  (found in the same Phase 18 audit). A real gap, but a separate,
+  admin-only concern outside the scope of the "list my own data" audits
+  this thread has been running — not fixed this phase.
 - **`toFixed(2)`-based money rounding in `src/modules/shipping/commission.ts`**
   has the well-known IEEE-754 half-cent edge case. Found in Phase 16's
   audit; not a newly-introduced bug — every money value in this codebase
@@ -891,16 +1019,18 @@ runtime bug. Fixed by moving the fallback rate onto
   real credentials exist. Verify the exact request/response shape and
   the webhook HMAC field order against Paymob's current sandbox before
   relying on it in production.
-- **New listings still publish straight to `ACTIVE`; there is no
-  mandatory pre-publish review gate** — Phase 10 gave moderators a
-  reversible `PENDING_REVIEW` escalation (`FLAG_FOR_REVIEW`, off a
-  report) as a genuine third option alongside dismiss/remove, so
-  `ListingStatus.PENDING_REVIEW`/`REJECTED` are no longer unused — but
-  this stays report-driven, not gate-on-every-listing. Deliberately not
-  built as a mandatory gate: forcing every new listing through moderator
-  approval before it's visible is a real product/velocity trade-off (core
-  marketplace loop vs. trust posture), not a pure technical call — flag as
-  **OWNER DECISION REQUIRED** if the owner wants that stronger posture.
+- **New listings still publish straight to `ACTIVE` by default; there is
+  no *mandatory* pre-publish review gate turned on** — Phase 10 gave
+  moderators a reversible `PENDING_REVIEW` escalation (`FLAG_FOR_REVIEW`,
+  off a report) as a genuine third option alongside dismiss/remove.
+  Phase 19 added the technical capability for a mandatory gate
+  (`PlatformSettings.requirePrePublishReview`, default `false`) at the
+  owner's explicit request to build scaffolding without flipping the
+  default. Forcing every new listing through moderator approval before
+  it's visible is a real product/velocity trade-off (core marketplace
+  loop vs. trust posture) — the capability now exists, but **turning it
+  on remains OWNER DECISION REQUIRED**; nothing in this codebase flips
+  it automatically.
 - ~~No rate limiting on `POST /api/reports` beyond same-target dedupe~~ —
   **resolved in Phase 9**: a per-reporter Redis sliding-window limit (20
   reports/hour, mirroring the OTP rate limiter) now blocks spamming
@@ -1243,6 +1373,44 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   purely as part of the documented API surface for a future mobile
   client (see `docs/ARCHITECTURE.md`).
 
+## Technical/Architecture Decisions (Phase 18)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- Same shape/clamp convention as Phase 17 — no new pattern invented for
+  the two additional holdouts a follow-up audit found.
+- No pagination UI for `getVerificationRequests`: a user's own
+  verification-request count is structurally bounded to a handful over
+  an account's lifetime, so `UrlPagination` there would be
+  over-engineering — a deliberate, judged exception to "every paginated
+  list needs a page control," not an oversight.
+- `GET /api/admin/shipping-companies`/`GET /api/admin/plans` (unbounded
+  reference tables) and `GET /api/admin/ledger` (50-row cap, no further
+  page) were investigated and explicitly left out of scope — a
+  different risk profile (small admin-managed data / a separate
+  admin-only concern) than the user-generated "list my own data"
+  pattern this audit thread has been closing.
+
+## Technical/Architecture Decisions (Phase 19)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `requirePrePublishReview` is a non-nullable `Boolean @default(false)`
+  — the first plain toggle in `PlatformSettings` — rather than the
+  nullable-fails-open pattern used for prices/enums, since a switch has
+  no meaningful third "unconfigured" state.
+- `expiresAt` is set immediately at creation regardless of starting
+  status, so `decidePendingListing`'s `APPROVE` branch (built for the
+  report-driven flagging path, which never touches `expiresAt`) needed
+  zero changes to correctly handle a listing that starts life at
+  `PENDING_REVIEW` directly — proven by a new regression test.
+- Two Arabic UI strings that assumed a listing was previously live
+  before reaching pending review were fixed to read correctly for both
+  the report-driven and toggle-on paths.
+- This is scaffolding only: the default stays `false`, so no live
+  marketplace behavior changed. Turning it on remains the owner's
+  decision — see "OWNER DECISION REQUIRED" below.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -1306,57 +1474,86 @@ request logging, request-id correlation, safe error responses, job
 lifecycle logging, frontend/server error boundaries) is fully functional
 right now, independent of Sentry.
 
+## OWNER DECISION REQUIRED — Open (Phase 19)
+
+**Mandatory pre-publish moderation — whether to actually turn it on.**
+The technical capability now exists
+(`PlatformSettings.requirePrePublishReview`, toggled via a checkbox at
+`/admin/settings`), built specifically so this decision could be made
+later without any further engineering work. The owner was asked
+directly this session and confirmed: build the capability, do not flip
+the default. The toggle stays `false` — new listings continue
+publishing straight to `ACTIVE` — until the owner explicitly decides to
+enable it. This is a genuine product/velocity trade-off (core
+marketplace loop vs. trust posture), not a technical call: enabling it
+means every seller's new listing waits for a moderator before going
+live, which has real UX and moderation-workload implications the owner
+should weigh, not something to default silently.
+
 ## Blockers
 
 None.
 
 ## Exact Next Action
 
-Phase 17 is committed and pushed (both branches kept in sync — see Git
-Safety in `CLAUDE.md` and this session's owner authorization to merge
-into `main`). Per the standing execution rule (one phase at a time,
-validate, stop for approval), **this session stops here**, awaiting
-direction on what to build next.
+Phases 18 and 19 are both committed and pushed (both branches kept in
+sync — see Git Safety in `CLAUDE.md` and this session's owner
+authorization to merge into `main`). Everything the owner asked for in
+this session's three-part request is now done: the verification pass
+was green, the pagination audit's two real gaps were closed (Phase 18),
+and the owner-gated items were worked through as far as technically
+possible without deciding anything reserved to the owner — the
+pre-publish-review toggle now has real scaffolding (Phase 19), and
+SMS/Email/Sentry/Paymob were confirmed to have nothing further
+buildable (see below). **No purely-technical, unstarted candidate
+remains at this point** — everything left genuinely needs either owner
+credentials or an owner product decision.
 
-**Important precedent, now confirmed across three phases**: Phase 15
+**Important precedent, now confirmed across five phases**: Phase 15
 found a real double-sell race a prior audit had missed; Phase 16
 re-audited and found four more genuine gaps; Phase 17 closed the one
 remaining genuinely-technical Deferred item from that audit
-(pagination) rather than leaving it to rot as a permanent "known but
-unfixed" entry. Every future session must keep re-auditing with fresh
-eyes rather than assuming the roadmap below is complete, and should
-treat a Deferred item explicitly scoped as "technical, no owner
-decision needed, just larger" as real backlog to eventually clear, not
-a place to park things indefinitely.
+(pagination); Phase 18's own re-audit of Phase 17's "these three were
+the only holdouts" conclusion found two more; Phase 19 closed the
+scaffolding half of the one remaining product-decision item. Every
+future session must keep re-auditing with fresh eyes rather than
+assuming the roadmap below is complete, and should treat a Deferred
+item explicitly scoped as "technical, no owner decision needed, just
+larger" as real backlog to eventually clear, not a place to park things
+indefinitely.
 
-Remaining candidates, none of them purely-technical-and-unstarted at
-this point:
+**SMS gateway, Email gateway, Sentry**: all three already have complete,
+tested technical scaffolding (Phases 8, 11, 14) — a vendor-agnostic HTTP
+provider abstraction for SMS/email, a fully guarded Sentry
+instrumentation setup — inert by design until the owner supplies real
+credentials via env vars. There is no further scaffolding to build; the
+only remaining step is the owner setting real values for
+`SMS_PROVIDER_API_URL`/`KEY`, `EMAIL_PROVIDER_API_URL`/`KEY`,
+`SENTRY_DSN`/`NEXT_PUBLIC_SENTRY_DSN` — values this codebase must never
+invent (CLAUDE.md Section 6/14).
+
+**Paymob sandbox verification**: cannot be performed without real Paymob
+merchant credentials, which don't exist in this environment. The
+integration is code-complete (built to Paymob's documented Accept API v1
+shape) but literally unverifiable without those credentials — nothing to
+build, only something to wait on.
+
+Remaining candidates, all genuinely owner-gated (credentials or a
+product decision), not purely-technical-and-unstarted:
 
 - **The systemic `toFixed(2)` money-rounding note** (see Known Issues →
   Deferred, `src/modules/shipping/commission.ts`) — pre-existing
   everywhere in the codebase, not a newly-introduced bug; revisit only
   if real settlement data ever shows a discrepancy, not proactively.
-- **SMS gateway activation** — purely an owner action (pick a gateway,
-  set `SMS_PROVIDER_API_URL`/`SMS_PROVIDER_API_KEY`); see
-  `docs/DECISIONS.md`.
-- **Email gateway activation** — purely an owner action (pick a vendor,
-  set `EMAIL_PROVIDER_API_URL`/`EMAIL_PROVIDER_API_KEY`); see
-  `docs/DECISIONS.md`.
-- **Sentry activation** — purely an owner action (create a project, set
-  two env vars); see "OWNER DECISION REQUIRED — Open" above. Still open,
-  unchanged since Phase 8.
-- **`withSentryConfig` + source-map upload** — needs
-  `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN`, separate from the
-  DSN; a follow-up once Sentry itself is activated.
-- **Mandatory pre-publish moderation** (every new listing held for
-  approval before going `ACTIVE`, vs. today's report-driven
-  `FLAG_FOR_REVIEW`) — a genuine product/velocity trade-off, flagged as a
-  possible **OWNER DECISION REQUIRED** in Known Issues; not started.
-- **Verifying the Paymob integration against a real sandbox** (Deferred
-  since Phase 5, sharpened in Phase 15 — the `merchant_order_id`
-  extraction now has a defensive fallback, but which of its two checked
-  locations Paymob's real API actually uses is still unconfirmed) — needs
-  owner-supplied credentials.
+- **SMS/Email/Sentry gateway activation** and **`withSentryConfig` +
+  source-map upload** — see above; purely owner actions (real
+  credentials, a Sentry project, `SENTRY_ORG`/`SENTRY_PROJECT`/
+  `SENTRY_AUTH_TOKEN`).
+- **Mandatory pre-publish moderation — turning it on** — see "OWNER
+  DECISION REQUIRED — Open (Phase 19)" above. The scaffolding is done;
+  only the decision to enable it remains, and it's the owner's alone.
+- **Verifying the Paymob integration against a real sandbox** — see
+  above; needs owner-supplied credentials.
 
 A future session should re-run its own OODA audit (CLAUDE.md Section 4)
 from a fresh angle rather than just re-scan this list — three phases in

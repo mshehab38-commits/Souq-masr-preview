@@ -18,6 +18,7 @@ export const GET = withApiHandler(async () => {
 const bodySchema = z.object({
   freeListingActiveLimit: z.number().int().min(0).nullable().optional(),
   paymentProcessingFeeBearer: z.enum(["PLATFORM", "SELLER", "BUYER"]).nullable().optional(),
+  requirePrePublishReview: z.boolean().optional(),
 });
 
 export const PATCH = withApiHandler(async (request: Request) => {

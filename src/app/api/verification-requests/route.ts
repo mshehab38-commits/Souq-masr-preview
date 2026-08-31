@@ -15,12 +15,17 @@ const bodySchema = z.object({
   notes: z.string().trim().max(500).optional(),
 });
 
-export const GET = withApiHandler(async () => {
+export const GET = withApiHandler(async (request: Request) => {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   }
-  return NextResponse.json(await getVerificationRequests(user.id));
+
+  const { searchParams } = new URL(request.url);
+  const page = Number(searchParams.get("page")) || undefined;
+  const limit = Number(searchParams.get("limit")) || undefined;
+
+  return NextResponse.json(await getVerificationRequests(user.id, { page, limit }));
 });
 
 export const POST = withApiHandler(async (request: Request) => {

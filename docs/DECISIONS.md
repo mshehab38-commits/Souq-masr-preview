@@ -1051,3 +1051,93 @@ any client-side code in this app today (the corresponding pages are
 Server Components calling the module functions directly); they exist
 purely as part of the documented API surface for a future mobile
 client (see `docs/ARCHITECTURE.md`), which hasn't been built yet.
+
+## Two more unbounded "list my own data" queries found and closed after Phase 17
+
+A follow-up audit (explicitly re-checking rather than trusting Phase
+17's own conclusion — the standing lesson from Phases 15-17 is that a
+"nothing left" audit has been wrong every time it's been re-checked)
+found two more genuinely unbounded queries of the same shape: plain
+`listFavoriteListings(userId)` in `src/modules/catalog/favorites.ts`
+(behind `GET /api/favorites`, zero UI consumers — same "future API
+surface" situation as the three Phase 17 routes) and
+`getVerificationRequests(userId)` in
+`src/modules/identity/verification.ts` (behind `GET
+/api/verification-requests` and consumed directly, unbounded, by
+`src/app/profile/page.tsx`). Both were brought in line with the same
+`{ items, page, totalPages, totalCount }`/20-default/100-max
+convention; `getVerificationRequests`'s sibling in the same file,
+`listVerificationRequests` (the admin/moderator queue), already had the
+exact shape to mirror.
+
+No pagination UI was added for verification requests specifically — a
+user's own request count is structurally bounded to a handful over the
+lifetime of an account (there is no realistic path to a "page 2"), so
+building `UrlPagination` for it would be over-engineering; the
+`/profile` page continues to render the full first page as before. This
+is different from favorites, orders, and listings, all of which can
+realistically grow unbounded for an active user.
+
+Two further findings from the same audit are deliberately **not**
+fixed in this pass, for the same "different risk profile" reason Phase
+16 used to defer this exact pagination work in the first place:
+`GET /api/admin/shipping-companies` and `GET /api/admin/plans` are
+unbounded, but they're small, admin-managed reference tables — a
+fundamentally different growth pattern than user-generated "list my own
+data," and not a performance risk in practice. `GET /api/admin/ledger`
+has a hard `take: 50` cap with no further page beyond the most recent
+50 rows — a real gap, but a separate, admin-only concern outside this
+audit's scope (user-facing "list my own data" endpoints). Both are
+recorded in `PROJECT_STATE.md`'s Known Issues as deferred, not silently
+dropped.
+
+## `requirePrePublishReview` is a non-nullable boolean, not the usual nullable-fails-open pattern
+
+Every other `PlatformSettings` field (`freeListingActiveLimit Int?`,
+`paymentProcessingFeeBearer PaymentFeeBearer?`) is nullable, where null
+means "the owner hasn't configured this yet" and the code fails open
+(no cap, no fee-bearer effect) until it's set. `requirePrePublishReview`
+is the first plain boolean in this model, and a boolean has no
+meaningful third "unconfigured" state the way a price or an enum does —
+it's either on or off. So it's `Boolean @default(false)`, non-nullable,
+with `false` (today's existing behavior: publish straight to `ACTIVE`)
+as the honest, safe default, rather than forcing a null-check everywhere
+it's read for a distinction that can't actually occur. This was asked
+of the owner directly (CLAUDE.md Section 7 reserves this kind of
+product/velocity trade-off): the answer was to build the technical
+capability without flipping the live default — this field and its wiring
+are exactly that, no more.
+
+`createListing` reads the setting once, via `getPlatformSettings()`,
+outside the `Serializable` transaction that guards the active-listing-
+limit count-then-create race (Phase 16). Unlike that count, this is a
+simple read of an admin config flag with no concurrent-mutation race to
+protect against — there's nothing to retry on conflict for a value one
+admin action changes at a time.
+
+`expiresAt` is set immediately at creation regardless of which status
+the listing starts at — the same value/timing as today's `ACTIVE` path,
+not left null for a `PENDING_REVIEW` listing. This was a deliberate
+choice to avoid a real bug: `decidePendingListing`'s `APPROVE` branch
+(built in Phase 10 for the report-driven flagging path) never sets
+`expiresAt`, because a flagged listing was always already `ACTIVE` (and
+therefore already had a real `expiresAt`) before being flagged. A
+brand-new toggle-on listing has no such prior value — without setting it
+at creation, it would go live via `decidePendingListing` and then never
+expire. Setting it immediately means `decidePendingListing`,
+`listPendingReviewListings`, and the entire Phase 10 pending-review
+queue needed **zero code changes** to correctly handle a listing that
+starts life at `PENDING_REVIEW` directly instead of arriving there via a
+report — proven by a new regression test that creates a toggle-on
+listing, confirms it appears in the queue, approves it, and confirms it
+ends `ACTIVE` with a real `expiresAt` intact.
+
+Two Arabic UI strings assumed a listing was previously live before
+reaching pending review, which becomes literally false for a first-time
+toggle-on submission: the pending-review queue's approve button read
+"الموافقة وإعادة النشر" ("approve and **re**-publish") — changed to
+"الموافقة والنشر" ("approve and publish"), which reads correctly for
+both the report-driven and toggle-on paths. The approval notification
+similarly said "...وهو الآن نشط مجددًا" ("...and it is now active
+**again**") — the word "مجددًا" (again) was dropped for the same
+reason. Both are narrowly caused by this feature, not scope creep.

@@ -138,7 +138,7 @@ test.describe("moderation: flag a listing for review, then approve it", () => {
     const decideResponse = page.waitForResponse(
       (res) => res.url().includes("/api/admin/listings/pending-review/") && res.request().method() === "PATCH",
     );
-    await page.getByRole("button", { name: "الموافقة وإعادة النشر" }).click();
+    await page.getByRole("button", { name: "الموافقة والنشر" }).click();
     await decideResponse;
 
     const approved = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });

@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import type { FulfillmentMode } from "@prisma/client";
 import { searchIndexQueue } from "@/jobs/queues";
 import { resolveActiveListingLimit } from "@/modules/subscriptions/service";
+import { getPlatformSettings } from "@/modules/settings/service";
 import { resolveCommerceEligibility } from "./commerceEligibility";
 import { validateListingAttributes } from "./attributes";
 
@@ -55,12 +56,18 @@ export async function createListing(
     fulfillmentMode = input.fulfillmentMode;
   }
 
+  // Default false — a new listing publishes straight to ACTIVE unless an
+  // admin has explicitly opted into mandatory pre-publish review. See
+  // PlatformSettings.requirePrePublishReview and docs/DECISIONS.md.
+  const settings = await getPlatformSettings();
+
   const result = await createListingRowAtomically(
     ownerId,
     input,
     attributeResult.data as Prisma.InputJsonValue,
     commerceEnabled,
     fulfillmentMode,
+    settings.requirePrePublishReview,
   );
 
   if (result.success) {
@@ -90,12 +97,27 @@ async function createListingRowAtomically(
   attributes: Prisma.InputJsonValue,
   commerceEnabled: boolean,
   fulfillmentMode: FulfillmentMode | null,
+  requirePrePublishReview: boolean,
 ): Promise<CreateListingResult> {
   try {
-    return await attemptCreateListingRow(ownerId, input, attributes, commerceEnabled, fulfillmentMode);
+    return await attemptCreateListingRow(
+      ownerId,
+      input,
+      attributes,
+      commerceEnabled,
+      fulfillmentMode,
+      requirePrePublishReview,
+    );
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
-      return attemptCreateListingRow(ownerId, input, attributes, commerceEnabled, fulfillmentMode);
+      return attemptCreateListingRow(
+        ownerId,
+        input,
+        attributes,
+        commerceEnabled,
+        fulfillmentMode,
+        requirePrePublishReview,
+      );
     }
     throw error;
   }
@@ -107,6 +129,7 @@ async function attemptCreateListingRow(
   attributes: Prisma.InputJsonValue,
   commerceEnabled: boolean,
   fulfillmentMode: FulfillmentMode | null,
+  requirePrePublishReview: boolean,
 ): Promise<CreateListingResult> {
   return prisma.$transaction(
     async (tx): Promise<CreateListingResult> => {
@@ -124,10 +147,15 @@ async function attemptCreateListingRow(
         }
       }
 
-      // Publishes straight to ACTIVE — this phase's pre-publish review
+      // Publishes straight to ACTIVE by default. The pre-publish review
       // queue (flagListingForReview/decidePendingListing below) is
-      // moderator-initiated off a report, not a mandatory gate on every
-      // new listing.
+      // moderator-initiated off a report, not a mandatory gate — unless an
+      // admin has explicitly turned on requirePrePublishReview, in which
+      // case every new listing starts at PENDING_REVIEW instead. Either
+      // way expiresAt is set immediately, at the same value/timing: a
+      // PENDING_REVIEW listing approved later via decidePendingListing
+      // needs no separate expiresAt-setting logic there, since it already
+      // has one from the moment it was created.
       const listing = await tx.listing.create({
         data: {
           ownerId,
@@ -141,7 +169,7 @@ async function attemptCreateListingRow(
           attributes,
           commerceEnabled,
           fulfillmentMode,
-          status: "ACTIVE",
+          status: requirePrePublishReview ? "PENDING_REVIEW" : "ACTIVE",
           expiresAt: new Date(Date.now() + LISTING_LIFETIME_MS),
         },
       });
