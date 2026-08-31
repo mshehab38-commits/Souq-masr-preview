@@ -4,6 +4,7 @@ import type { FulfillmentMode } from "@prisma/client";
 import { searchIndexQueue } from "@/jobs/queues";
 import { resolveActiveListingLimit } from "@/modules/subscriptions/service";
 import { getPlatformSettings } from "@/modules/settings/service";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveCommerceEligibility } from "./commerceEligibility";
 import { validateListingAttributes } from "./attributes";
 
@@ -12,6 +13,14 @@ import { validateListingAttributes } from "./attributes";
 // decision — a technical default for keeping stale inventory out of search;
 // revisit only if the owner wants seller-facing control over it later.
 export const LISTING_LIFETIME_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+
+// A legitimate seller rarely creates more than a handful of listings per
+// hour; 20/hour mirrors this exact codebase's own precedent
+// (src/modules/moderation/reports.ts's per-reporter report limit) for the
+// same "protect a write path from a scripted loop" concern, while leaving
+// generous headroom for a real bulk-listing session. See docs/DECISIONS.md.
+const LISTING_CREATE_RATE_LIMIT_MAX = 20;
+const LISTING_CREATE_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 
 export interface ListingInput {
   categoryId: string;
@@ -30,12 +39,22 @@ export type CreateListingResult =
   | { success: true; listingId: string }
   | { success: false; error: "invalid_attributes"; details: string[] }
   | { success: false; error: "commerce_not_allowed"; reason: string }
-  | { success: false; error: "listing_limit_reached"; limit: number };
+  | { success: false; error: "listing_limit_reached"; limit: number }
+  | { success: false; error: "rate_limited" };
 
 export async function createListing(
   ownerId: string,
   input: ListingInput,
 ): Promise<CreateListingResult> {
+  const allowed = await checkRateLimit(
+    `ratelimit:listing-create:${ownerId}`,
+    LISTING_CREATE_RATE_LIMIT_MAX,
+    LISTING_CREATE_RATE_LIMIT_WINDOW_SECONDS,
+  );
+  if (!allowed) {
+    return { success: false, error: "rate_limited" };
+  }
+
   const attributeResult = await validateListingAttributes(input.categoryId, input.attributes);
   if (!attributeResult.success) {
     return { success: false, error: "invalid_attributes", details: attributeResult.errors ?? [] };
@@ -453,6 +472,24 @@ export async function bulkUpdateListings(
     data: { status: "ACTIVE", expiresAt: new Date(Date.now() + LISTING_LIFETIME_MS) },
   });
   return { requested: listingIds.length, affected: result.count };
+}
+
+// At up to MAX_BULK_IDS=100 listing IDs per call (enforced in the route's
+// zod schema), this endpoint could already touch 3,000 rows/hour per user
+// at this cap — ample for any real seller's inventory workflow (a handful
+// of calls per session) while stopping continuous scripted hammering.
+// Checked at the API route boundary, not inside bulkUpdateListings itself,
+// so its existing { requested, affected } return shape (and the tests
+// asserting it) doesn't need a breaking rewrite — see docs/DECISIONS.md.
+const BULK_ACTION_RATE_LIMIT_MAX = 30;
+const BULK_ACTION_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
+
+export async function checkBulkActionRateLimit(ownerId: string): Promise<boolean> {
+  return checkRateLimit(
+    `ratelimit:listing-bulk:${ownerId}`,
+    BULK_ACTION_RATE_LIMIT_MAX,
+    BULK_ACTION_RATE_LIMIT_WINDOW_SECONDS,
+  );
 }
 
 export type RenewListingResult =

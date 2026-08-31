@@ -7,15 +7,15 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-31 (Phase 20 completion)
+Last updated: 2026-08-31 (Phase 21 completion)
 
 ## Current Status
 
 **Phase 20 (twelve composite database indexes closing filter+sort query
-gaps a fresh audit found across `User`/`VerificationRequest`/`Listing`/
-`Favorite`/`Order`/`LedgerEntry`/`Report`) is COMPLETE, validated,
-committed, and pushed.** Phase 21 (rate limiting for the abuse-prone
-write endpoints the same audit round found) is next in this session.
+gaps a fresh audit found) and Phase 21 (a shared rate-limit utility
+wired into the three most abuse-prone write endpoints, plus a
+root-cause verification-request pending-dedupe fix) are both COMPLETE,
+validated, committed, and pushed.**
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -70,8 +70,8 @@ tasks to be framed across disciplines).
 | 17 | Pagination for `listOrdersForBuyer`/`listOrdersForSeller`/`listListingsByOwner` | `4d47aad` | Done |
 | 18 | Pagination for `listFavoriteListings`/`getVerificationRequests`, the two more unbounded "list my own data" queries a follow-up audit found | this session | Done |
 | 19 | Pre-publish-review admin toggle: `requirePrePublishReview` on `PlatformSettings`, scaffolding only, default off | `03b16dc` | Done |
-| 20 | Twelve composite DB indexes closing filter+sort query gaps (`User`/`VerificationRequest`/`Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`) | this session | **Done** |
-| 21 | Rate limiting for abuse-prone write endpoints + verification-request pending-dedupe | — | Not started |
+| 20 | Twelve composite DB indexes closing filter+sort query gaps (`User`/`VerificationRequest`/`Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`) | `a2911be` | Done |
+| 21 | Rate limiting (`src/lib/rate-limit.ts`) on `POST /api/listings`, image upload-URL minting, bulk listing actions + verification-request pending-dedupe | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -786,6 +786,49 @@ all 55 API routes — not revisited).
 - No schema removal, no application code change, no product/business
   decision involved — a pure technical hardening pass.
 
+## What Was Completed in Phase 21
+
+The same audit round that found the Phase 20 index gaps also ran a
+rate-limiting coverage audit (and a separate IDOR/authorization audit
+across all 55 API routes, which came back clean — no gap found).
+
+- **New shared `checkRateLimit(key, max, windowSeconds)`**
+  (`src/lib/rate-limit.ts`) — a generic Redis fixed-window limiter
+  generalizing the pattern already hand-rolled independently in
+  `requestOtp`/`createReport`. Those two existing limiters are
+  deliberately left untouched (both have compound logic beyond a single
+  window check) — new call sites use the shared utility instead.
+- **Wired into three genuinely abuse-prone endpoints**, each previously
+  unrated: `POST /api/listings` (`createListing`, 20/hour/user — the
+  only prior guard fails open when no plan limit is configured), `POST
+  /api/listings/[id]/images/upload-url` (`requestImageUploadTarget`,
+  60/hour/user — mints presigned storage URLs with only a content-type
+  check before this), and `POST /api/listings/bulk` (30/hour/user,
+  checked at the route boundary via a new `checkBulkActionRateLimit` so
+  `bulkUpdateListings`'s existing `{ requested, affected }` return
+  shape and its 4 passing tests needed no breaking change).
+- **`submitVerificationRequest` root-cause dedupe**: was a bare
+  `prisma.verificationRequest.create` with no dedupe at all — a user
+  with an already-`PENDING` request could flood the human-reviewed
+  admin queue. Fixed by returning the existing `PENDING` request
+  instead of creating a duplicate, modeled directly on `createReport`'s
+  same-target `OPEN`-report dedupe. This changed `POST
+  /api/verification-requests`'s response shape to `{ request,
+  alreadyPending }`, requiring a matching update to
+  `src/app/profile/ProfileView.tsx`'s submit handler.
+- **`POST /api/stores` investigated and confirmed already sufficiently
+  protected**: `Store.ownerId @unique` enforces one-per-owner at the
+  database level. No rate limit added.
+- Deliberately deferred (real but lower-severity, not fixed this
+  phase): `POST /api/listings/[id]/favorite`, `POST
+  /api/saved-searches`, `POST /api/listings/[id]/images/confirm`, `POST
+  /api/listings/[id]/renew`, `POST /api/orders` (already naturally
+  capped — `createOrder` atomically reserves the listing to `SOLD`, so
+  at most one successful order can exist per listing). See Known
+  Issues → Deferred.
+- No product/business decision involved — all three threshold values
+  are technical anti-abuse defaults, not commercial policy.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -816,31 +859,54 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 18 migrations applied. New this phase (Phase 20):
-  `20260831192836_add_composite_indexes_for_pagination_queries` (12
-  composite indexes across `User`/`VerificationRequest`/`Listing`/
-  `Favorite`/`Order`/`LedgerEntry`/`Report` — see `docs/DATABASE.md`).
-  Phase 19 added `20260831183256_add_require_pre_publish_review`. Schema
-  at `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
+- 18 migrations applied — unchanged this phase (Phase 21 is a pure
+  application-code change, no schema change). Last migration:
+  `20260831192836_add_composite_indexes_for_pagination_queries` (Phase
+  20 — 12 composite indexes across `User`/`VerificationRequest`/
+  `Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`). Schema at
+  `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
-## Tests & Results (Phase 20, all green)
+## Tests & Results (Phase 21, all green)
 
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
+- `npm run boundaries` — no violations (224 modules, 797 dependencies —
+  +1 module for the new `src/lib/rate-limit.ts`, +3 dependencies for its
+  three new call sites).
+- `npm test` — **351/351 unit tests passing** across 46 files. New this
+  phase: `tests/lib/rate-limit.test.ts` (3 — allows-then-rejects,
+  independent keys, resets after a real wall-clock window), new
+  `tests/catalog/images.test.ts` (4 — baseline `requestImageUploadTarget`
+  coverage that didn't exist before, plus the rate-limit case), 2 new
+  `createListing` tests (rate-limited after 20/hour, unaffected for a
+  different owner), a new `checkBulkActionRateLimit` describe block in
+  `tests/catalog/bulk-actions.test.ts` (2 — its 4 existing
+  `bulkUpdateListings` tests untouched), and 3 new `submitVerificationRequest`
+  tests in `tests/identity/verification.test.ts` (creates fresh when none
+  pending, dedupes against an existing `PENDING` request, allows a new
+  one after the prior is reviewed).
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified —
+  `e2e/auth-signup.spec.ts`'s single verification-request submission
+  hits the `alreadyPending: false` path unchanged.
+- `npm run build` — clean, warning-free production build; no new
+  routes.
+
+### Tests & Results (Phase 20, for reference)
+
 - `npm run boundaries` — no violations (223 modules, 794 dependencies —
-  unchanged; this is a schema-only migration, no new module/dependency
+  unchanged; this was a schema-only migration, no new module/dependency
   files).
 - `npm test` — **337/337 unit tests passing** across 44 files —
-  unchanged from Phase 19. No new tests this phase: index-only
-  migrations aren't unit-tested in this codebase's established
-  convention (see `docs/DECISIONS.md`).
+  unchanged from Phase 19. No new tests: index-only migrations aren't
+  unit-tested in this codebase's established convention (see
+  `docs/DECISIONS.md`).
 - `npx playwright test` — **8/8 e2e specs passing**, all unmodified — a
   pure index addition changes query plans, never query results.
 - `npm run build` — clean, warning-free production build; no new
   routes.
 - `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
-  sync" after the named migration above.
+  sync" after the named migration.
 
 ### Tests & Results (Phase 19, for reference)
 
@@ -995,6 +1061,19 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ### Deferred (not bugs — explicit scope decisions)
 
+- **Five lower-severity unrated endpoints from the Phase 21
+  rate-limiting audit, not fixed**: `POST /api/listings/[id]/favorite`
+  (a cheap toggle bounded to one row per user/listing — a DB-load
+  concern, not content spam), `POST /api/saved-searches`, `POST
+  /api/listings/[id]/images/confirm`, `POST /api/listings/[id]/renew`
+  (all lower-impact write paths with no third-party amplification), and
+  `POST /api/orders` (`createOrder` already atomically reserves the
+  listing to `SOLD`, so at most one successful order can ever exist per
+  listing — the "spam orders against one listing" attack shape is
+  already naturally capped; a real attack would need many distinct
+  valid listings, a materially more expensive threat). Revisit only if
+  a fresh audit finds one of these risk profiles has materially
+  changed.
 - **Three lower-value composite-index candidates from the Phase 20
   audit, not added**: the `Listing` pending-review queue (`status,
   updatedAt` — admin-only, low volume), `Subscription` (`userId, status,
@@ -1484,6 +1563,29 @@ See `docs/DECISIONS.md` for full rationale. Summary:
 - No test changes: index-only migrations have never been unit-tested in
   this codebase's established convention.
 
+## Technical/Architecture Decisions (Phase 21)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- A new shared `checkRateLimit()` utility for new call sites; the two
+  existing hand-rolled limiters (`requestOtp`, `createReport`) are
+  deliberately left untouched since both have compound logic beyond a
+  single window check.
+- Three threshold values (20/hour listing-create, 60/hour upload-URL,
+  30/hour bulk actions) reasoned against realistic legitimate usage —
+  technical anti-abuse defaults, not commercial policy.
+- The bulk-action rate limit is checked at the API route boundary, not
+  inside `bulkUpdateListings`, specifically to avoid a breaking change
+  to its existing tested return shape.
+- `submitVerificationRequest`'s new any-type `PENDING` dedupe, modeled
+  on `createReport`, is a root-cause fix rather than a rate-limit
+  band-aid — there's no legitimate reason for a user to have more than
+  one `PENDING` request at once.
+- `createStore`'s existing `Store.ownerId @unique` constraint was
+  confirmed sufficient — no separate rate limit added.
+- A separate, fresh IDOR/authorization audit run in the same session
+  found no gap across all 55 API routes.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -1569,18 +1671,22 @@ None.
 
 ## Exact Next Action
 
-Phase 20 is committed and pushed (both branches kept in sync — see Git
-Safety in `CLAUDE.md` and this session's owner authorization to merge
-into `main`). The prior session's own "no purely-technical, unstarted
-candidate remains" conclusion was re-tested this session via three
-fresh audits (IDOR/authorization, rate limiting, DB indexes) — the
-IDOR audit came back clean, but the rate-limiting and DB-index audits
-each found real, genuine, purely-technical gaps. Phase 20 closed the
-DB-index half. **Phase 21 (rate limiting for the abuse-prone write
-endpoints the same audit round found, plus a verification-request
-pending-dedupe fix) is next in this same session.**
+Phases 20 and 21 are both committed and pushed (both branches kept in
+sync — see Git Safety in `CLAUDE.md` and this session's owner
+authorization to merge into `main`). The prior session's own "no
+purely-technical, unstarted candidate remains" conclusion was re-tested
+this session via three fresh audits (IDOR/authorization, rate limiting,
+DB indexes) — the IDOR audit came back clean, but the rate-limiting and
+DB-index audits each found real, genuine, purely-technical gaps, now
+both closed. Per the owner's explicit continuation directive this
+session, the next step is **another fresh audit round targeting areas
+not yet checked this session**: background-job idempotency/retry
+safety, payment-webhook duplicate-processing protection, and
+notification-delivery reliability — continuing to implement any
+genuine owner-independent technical gap found, the same discipline that
+has now held across six consecutive phases.
 
-**Important precedent, now confirmed across six phases**: Phase 15
+**Important precedent, now confirmed across seven phases**: Phase 15
 found a real double-sell race a prior audit had missed; Phase 16
 re-audited and found four more genuine gaps; Phase 17 closed the one
 remaining genuinely-technical Deferred item from that audit
@@ -1588,11 +1694,12 @@ remaining genuinely-technical Deferred item from that audit
 the only holdouts" conclusion found two more; Phase 19 closed the
 scaffolding half of the one remaining product-decision item; Phase 20's
 own re-audit of "nothing technical left" found twelve missing composite
-indexes and a separate rate-limiting gap (Phase 21). Every future
-session must keep re-auditing with fresh eyes rather than assuming the
-roadmap below is complete, and should treat a Deferred item explicitly
-scoped as "technical, no owner decision needed, just larger" as real
-backlog to eventually clear, not a place to park things indefinitely.
+indexes; Phase 21 closed the rate-limiting gap the same audit round
+found. Every future session must keep re-auditing with fresh eyes
+rather than assuming the roadmap below is complete, and should treat a
+Deferred item explicitly scoped as "technical, no owner decision
+needed, just larger" as real backlog to eventually clear, not a place
+to park things indefinitely.
 
 **SMS gateway, Email gateway, Sentry**: all three already have complete,
 tested technical scaffolding (Phases 8, 11, 14) — a vendor-agnostic HTTP

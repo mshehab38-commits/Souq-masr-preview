@@ -54,9 +54,9 @@ export const POST = withApiHandler(async (request: Request) => {
     actorId: user.id,
     action: "verification_request.submit",
     targetType: "VerificationRequest",
-    targetId: created.id,
-    metadata: { type: parsed.data.type },
+    targetId: created.request.id,
+    metadata: { type: parsed.data.type, alreadyPending: created.alreadyPending },
   });
 
-  return NextResponse.json(created, { status: 201 });
+  return NextResponse.json({ request: created.request, alreadyPending: created.alreadyPending }, { status: 201 });
 });

@@ -77,7 +77,11 @@ this list: a user's own request count is structurally always small.
 
 Requires session + CSRF. Body: `{ type: "INDIVIDUAL_SELLER" |
 "BUSINESS", businessName?: string, documentUrl?: string, notes?: string }`.
-Creates a `PENDING` request; admin review UI lands in Phase 10.
+Returns `201 { request, alreadyPending }`. If the user already has a
+`PENDING` request (of any type), that existing request is returned
+instead of creating a duplicate (`alreadyPending: true`) — mirrors
+`POST /api/reports`'s `alreadyOpen` dedupe (Phase 21). Admin review UI
+lands in Phase 10.
 
 ## Listings (Phase 3)
 
@@ -92,7 +96,9 @@ a missing required field, or a wrong type/option returns `400`.
 Commerce eligibility (`commerceEnabled`/`fulfillmentMode`) is resolved
 server-side from the category default and the seller's verification
 status, never taken from the request body. Enqueues a search-indexing
-job. Returns the created listing.
+job. Returns the created listing. Rate-limited: max 20 creates per user
+per hour (Phase 21, `src/lib/rate-limit.ts`). Returns `429 { success:
+false, error: "rate_limited" }` once exceeded.
 
 ### `GET /api/listings/[id]`
 
@@ -138,7 +144,9 @@ caller's own listings in the query's `WHERE` clause itself — an ID for a
 listing the caller doesn't own is silently excluded from `affected`
 rather than causing an error. `relist` only affects listings currently
 `SOLD` or `EXPIRED`, flipping them to `ACTIVE` with a fresh `expiresAt`.
-Returns `{ requested, affected }`.
+Returns `{ requested, affected }`. Rate-limited: max 30 calls per user
+per hour, independent of each call's batch size (Phase 21). Returns
+`429 { error: "rate_limited" }` once exceeded.
 
 ### `POST /api/listings/[id]/renew`
 
@@ -155,7 +163,9 @@ Requires session + CSRF + ownership. Body: `{ contentType: string }`
 (must be `image/jpeg`, `image/png`, or `image/webp` — checked against an
 allow-list before a target is even issued). Returns a presigned upload
 target: `{ uploadUrl, headers, key }` (R2) or a same-origin local URL +
-key (dev only).
+key (dev only). Rate-limited: max 60 upload-URL requests per user per
+hour (Phase 21). Returns `429 { success: false, error: "rate_limited" }`
+once exceeded.
 
 ### `POST /api/listings/[id]/images/confirm`
 
@@ -187,8 +197,12 @@ surface for a future client, same as `/api/orders/buying`,
 
 Requires session + CSRF. Body: `{ name: string, description?: string }`.
 Creates the caller's storefront — one per user (`already_exists` on a
-second attempt). Generates a globally unique `slug` server-side; the
-client never supplies one. Returns `{ success, storeId, slug }`.
+second attempt), enforced at the database level (`Store.ownerId
+@unique`, not just an application-layer check) — confirmed during the
+Phase 21 rate-limiting audit as already sufficiently protected against
+spam creation; no separate rate limit was needed. Generates a globally
+unique `slug` server-side; the client never supplies one. Returns `{
+success, storeId, slug }`.
 
 ### `GET /api/stores/mine`
 

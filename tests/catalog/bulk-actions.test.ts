@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
-import { bulkUpdateListings, renewListing } from "@/modules/catalog/listings";
+import { redis } from "@/lib/redis";
+import { bulkUpdateListings, checkBulkActionRateLimit, renewListing } from "@/modules/catalog/listings";
 
 const createdUserIds: string[] = [];
 const createdCategoryIds: string[] = [];
@@ -88,6 +89,36 @@ describe("bulkUpdateListings", () => {
     expect(soldAfter.status).toBe("ACTIVE");
     expect(soldAfter.expiresAt).not.toBeNull();
     expect(soldAfter.expiresAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
+describe("checkBulkActionRateLimit", () => {
+  afterEach(async () => {
+    if (createdUserIds.length > 0) {
+      await redis.del(...createdUserIds.map((id) => `ratelimit:listing-bulk:${id}`));
+    }
+    await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    createdUserIds.length = 0;
+  });
+
+  it("allows up to 30 calls per owner within the window, then rejects the 31st", async () => {
+    const owner = await makeUser();
+
+    for (let i = 0; i < 30; i++) {
+      expect(await checkBulkActionRateLimit(owner.id)).toBe(true);
+    }
+    expect(await checkBulkActionRateLimit(owner.id)).toBe(false);
+  });
+
+  it("tracks limits independently per owner", async () => {
+    const owner = await makeUser();
+    const other = await makeUser();
+
+    for (let i = 0; i < 30; i++) {
+      await checkBulkActionRateLimit(owner.id);
+    }
+    expect(await checkBulkActionRateLimit(owner.id)).toBe(false);
+    expect(await checkBulkActionRateLimit(other.id)).toBe(true);
   });
 });
 

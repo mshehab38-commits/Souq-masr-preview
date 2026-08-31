@@ -31,6 +31,7 @@ export {
   markListingAsSold,
   incrementListingViewCount,
   bulkUpdateListings,
+  checkBulkActionRateLimit,
   renewListing,
   getSellerStats,
   LISTING_LIFETIME_MS,

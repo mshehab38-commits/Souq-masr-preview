@@ -100,8 +100,18 @@ export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
         setRequestError(data.error === "business_name_required" ? "اسم النشاط التجاري مطلوب" : "حدث خطأ ما");
         return;
       }
+      if (data.alreadyPending) {
+        setRequestError("لديك طلب توثيق قيد المراجعة بالفعل");
+        return;
+      }
       setRequests((prev) => [
-        { id: data.id, type: data.type, status: data.status, businessName: data.businessName, createdAt: data.createdAt },
+        {
+          id: data.request.id,
+          type: data.request.type,
+          status: data.request.status,
+          businessName: data.request.businessName,
+          createdAt: data.request.createdAt,
+        },
         ...prev,
       ]);
       setBusinessName("");

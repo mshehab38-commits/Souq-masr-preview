@@ -30,4 +30,5 @@ export type {
   ListVerificationRequestsFilter,
   GetVerificationRequestsFilter,
   VerificationDecision,
+  SubmitVerificationRequestResult,
 } from "./verification";

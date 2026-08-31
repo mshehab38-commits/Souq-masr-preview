@@ -3,12 +3,35 @@ import { recordAudit } from "@/lib/audit";
 import { createNotification } from "@/modules/notifications/service";
 import type { VerificationRequestType, VerificationRequestStatus } from "@prisma/client";
 
+export type SubmitVerificationRequestResult =
+  | {
+      success: true;
+      request: Awaited<ReturnType<typeof prisma.verificationRequest.create>>;
+      alreadyPending: false;
+    }
+  | {
+      success: true;
+      request: NonNullable<Awaited<ReturnType<typeof prisma.verificationRequest.findFirst>>>;
+      alreadyPending: true;
+    };
+
+// A user with an already-PENDING request gets that same request back
+// instead of creating a duplicate — the same shape as createReport's
+// same-target OPEN-report dedupe (src/modules/moderation/reports.ts).
+// Unlike createReport there's no separate "target" dimension here (the
+// target is always the requesting user), so any existing PENDING request
+// blocks a new one regardless of `type`. See docs/DECISIONS.md.
 export async function submitVerificationRequest(
   userId: string,
   type: VerificationRequestType,
   data: { businessName?: string; notes?: string },
-) {
-  return prisma.verificationRequest.create({
+): Promise<SubmitVerificationRequestResult> {
+  const existing = await prisma.verificationRequest.findFirst({
+    where: { userId, status: "PENDING" },
+  });
+  if (existing) return { success: true, request: existing, alreadyPending: true };
+
+  const request = await prisma.verificationRequest.create({
     data: {
       userId,
       type,
@@ -16,6 +39,7 @@ export async function submitVerificationRequest(
       notes: data.notes,
     },
   });
+  return { success: true, request, alreadyPending: false };
 }
 
 const DEFAULT_LIMIT = 20;

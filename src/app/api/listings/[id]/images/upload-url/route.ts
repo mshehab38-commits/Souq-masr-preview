@@ -25,7 +25,14 @@ export const POST = withApiHandler(async (request: Request, context: { params: P
 
   const result = await requestImageUploadTarget(id, user.id, parsed.data.contentType);
   if (!result.success) {
-    const status = result.error === "not_found" ? 404 : result.error === "forbidden" ? 403 : 400;
+    const status =
+      result.error === "not_found"
+        ? 404
+        : result.error === "forbidden"
+          ? 403
+          : result.error === "rate_limited"
+            ? 429
+            : 400;
     return NextResponse.json(result, { status });
   }
 

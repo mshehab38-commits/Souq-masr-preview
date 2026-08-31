@@ -1180,3 +1180,108 @@ both the report-driven and toggle-on paths. The approval notification
 similarly said "...وهو الآن نشط مجددًا" ("...and it is now active
 **again**") — the word "مجددًا" (again) was dropped for the same
 reason. Both are narrowly caused by this feature, not scope creep.
+
+## A shared rate-limit utility, built for new call sites — the two existing limiters are left untouched
+
+A fresh audit (rate-limiting coverage across mutating endpoints, run
+alongside the Phase 20 DB-index audit) found several write endpoints
+with zero rate limiting of any kind, despite this codebase already
+having two hand-rolled Redis fixed-window limiters:
+`requestOtp` (`src/modules/identity/otp.ts`, separate phone/IP windows)
+and `createReport` (`src/modules/moderation/reports.ts`, per-reporter,
+20/hour). A new shared `checkRateLimit(key, max, windowSeconds)`
+(`src/lib/rate-limit.ts`) generalizes the common shape both already use
+(`GET` current count → compare to `max` → `INCR`+`EXPIRE` on the
+request that's let through) for new call sites.
+
+**`requestOtp`/`createReport` were deliberately left untouched, not
+refactored onto the new utility.** Both have compound logic beyond a
+single window check: `requestOtp` combines a cooldown key and two
+separate window keys (phone, IP) with different thresholds in one
+`Promise.all`; `createReport` increments its counter only on the
+non-dedupe path, not unconditionally. Forcing either onto a generic
+single-key helper would save a couple of lines while risking a subtle
+behavior change in already-shipped, already-tested code, for no
+functional benefit.
+
+Wired into three genuinely abuse-prone endpoints, found by reading the
+actual code (not guessed at):
+
+- **`POST /api/listings` (`createListing`)** — 20 creates/hour/user.
+  The only prior guard, `resolveActiveListingLimit()`, counts
+  currently-**ACTIVE** listings against a plan cap and fails open when
+  unconfigured or on an unlimited plan — a script could create
+  unlimited listings with zero throttle before this fix. 20/hour
+  mirrors this exact codebase's own `createReport` precedent for the
+  same "protect a write path from a scripted loop" concern, generous
+  enough for a real bulk-listing session.
+- **`POST /api/listings/[id]/images/upload-url`
+  (`requestImageUploadTarget`)** — 60/hour/user. Mints presigned
+  storage upload URLs with only a content-type check before this fix; a
+  scripted loop could generate unlimited presigned URLs, a real
+  cost/abuse vector against the storage backend before any file is even
+  uploaded.
+- **`POST /api/listings/bulk`** — 30/hour/user, checked at the API
+  route boundary (`checkBulkActionRateLimit`) rather than inside
+  `bulkUpdateListings` itself. `bulkUpdateListings` returns a plain `{
+  requested, affected }`, never a discriminated `{success,error}` union,
+  and every one of its existing tests asserts that exact shape —
+  retrofitting a wrapper just to add a rate limit would force a breaking
+  type/test change for zero functional benefit. At up to 100 listing
+  IDs per call (the route's own `MAX_BULK_IDS`), 30 calls/hour still
+  allows 3,000 row-touches/hour per user, ample for any real inventory
+  workflow.
+
+All three threshold values (20, 60, 30 per hour) are technical
+anti-abuse defaults reasoned against realistic legitimate usage
+patterns — explicitly not CLAUDE.md Section 6 financial/business values,
+since they govern infrastructure protection, not pricing or commercial
+policy.
+
+**`POST /api/stores` was investigated and confirmed already
+sufficiently protected** — `Store.ownerId` is `@unique` in the schema,
+so one-store-per-owner is enforced at the database level, not just
+application logic. No rate limit was added; see `docs/API.md`.
+
+Deliberately deferred as lower-severity, not fixed this phase: `POST
+/api/listings/[id]/favorite` (a cheap toggle bounded to one row per
+user/listing — a DB-load concern, not content spam), `POST
+/api/saved-searches`, `POST /api/listings/[id]/images/confirm`, `POST
+/api/listings/[id]/renew`, and `POST /api/orders` (its `createOrder`
+already atomically reserves the listing to `SOLD`, so at most one
+successful order can ever exist per listing — the "spam orders against
+one listing" attack shape is already naturally capped; a real attack
+would need many distinct valid listings, a materially more expensive
+and different threat than a bare unrated endpoint suggests).
+
+A separate, fresh IDOR/authorization audit run in the same session
+found all 55 API routes correctly enforce ownership or admin/moderator
+gating, with CSRF present everywhere it's needed — no gap, not part of
+this phase.
+
+## `submitVerificationRequest` dedupes against an already-PENDING request, not just a time-window limit
+
+The same rate-limiting audit found `submitVerificationRequest`
+(`src/modules/identity/verification.ts`) was a bare
+`prisma.verificationRequest.create` with no dedupe of any kind — a user
+with an already-`PENDING` request could submit unlimited additional
+requests, flooding the human-reviewed admin queue. A generic time-window
+rate limit would only slow this down, not fix the underlying workflow
+bug: there is no legitimate reason for a user to have more than one
+`PENDING` request open at once.
+
+Fixed with a root-cause dedupe modeled directly on `createReport`'s
+existing same-target `OPEN`-report dedupe: `submitVerificationRequest`
+now checks for an existing `PENDING` request for the user first, and
+returns that request instead of creating a duplicate
+(`{ success: true, request, alreadyPending: true }`) rather than
+inserting a new row. Unlike `createReport` there's no separate "target"
+dimension here (the target is always the requesting user), so any
+existing `PENDING` request blocks a new one regardless of `type`.
+
+This changed `POST /api/verification-requests`'s response shape from
+the raw Prisma row to `{ request, alreadyPending }`, which required
+updating `src/app/profile/ProfileView.tsx`'s submit handler to read the
+new shape and to show a "you already have a pending request" message
+instead of prepending a visible duplicate row when `alreadyPending` is
+`true`.

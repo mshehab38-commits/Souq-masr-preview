@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
+import { redis } from "@/lib/redis";
 import {
   createListing,
   listListingsByOwner,
@@ -29,6 +30,9 @@ async function makeCategory() {
 
 describe("createListing", () => {
   afterEach(async () => {
+    if (createdUserIds.length > 0) {
+      await redis.del(...createdUserIds.map((id) => `ratelimit:listing-create:${id}`));
+    }
     await prisma.listing.deleteMany({ where: { ownerId: { in: createdUserIds } } });
     await prisma.category.deleteMany({ where: { id: { in: createdCategoryIds } } });
     await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
@@ -134,6 +138,32 @@ describe("createListing", () => {
 
     const activeCount = await prisma.listing.count({ where: { ownerId: owner.id, status: "ACTIVE" } });
     expect(activeCount).toBe(1);
+  });
+
+  it("rate-limits listing creation after 20 creates within the window, per owner", async () => {
+    const owner = await makeUser();
+    const category = await makeCategory();
+
+    for (let i = 0; i < 20; i++) {
+      const result = await createListing(owner.id, { categoryId: category.id, title: `إعلان رقم ${i}` });
+      expect(result.success).toBe(true);
+    }
+
+    const rateLimited = await createListing(owner.id, { categoryId: category.id, title: "إعلان زائد" });
+    expect(rateLimited).toEqual({ success: false, error: "rate_limited" });
+  });
+
+  it("does not rate-limit a different owner", async () => {
+    const owner = await makeUser();
+    const other = await makeUser();
+    const category = await makeCategory();
+
+    for (let i = 0; i < 20; i++) {
+      await createListing(owner.id, { categoryId: category.id, title: `إعلان رقم ${i}` });
+    }
+
+    const otherResult = await createListing(other.id, { categoryId: category.id, title: "إعلان مالك آخر" });
+    expect(otherResult.success).toBe(true);
   });
 });
 

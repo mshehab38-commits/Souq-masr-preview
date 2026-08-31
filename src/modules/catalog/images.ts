@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { getStorageProvider } from "@/lib/storage";
 import { imageProcessingQueue } from "@/jobs/queues";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
@@ -10,12 +11,20 @@ const EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
   "image/webp": "webp",
 };
 
+// A seller actively photographing/uploading across several listings in one
+// session can plausibly hit 50-60 requests/hour; 60 gives headroom for that
+// while stopping a script from minting unlimited presigned upload URLs — a
+// real cost/abuse vector against the storage backend even before any file
+// is ever uploaded. See docs/DECISIONS.md.
+const IMAGE_UPLOAD_URL_RATE_LIMIT_MAX = 60;
+const IMAGE_UPLOAD_URL_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
+
 export interface RequestUploadResult {
   success: boolean;
   key?: string;
   uploadUrl?: string;
   headers?: Record<string, string>;
-  error?: "not_found" | "forbidden" | "invalid_content_type";
+  error?: "not_found" | "forbidden" | "invalid_content_type" | "rate_limited";
 }
 
 export async function requestImageUploadTarget(
@@ -25,6 +34,15 @@ export async function requestImageUploadTarget(
 ): Promise<RequestUploadResult> {
   if (!ALLOWED_CONTENT_TYPES.includes(contentType)) {
     return { success: false, error: "invalid_content_type" };
+  }
+
+  const allowed = await checkRateLimit(
+    `ratelimit:image-upload-url:${ownerId}`,
+    IMAGE_UPLOAD_URL_RATE_LIMIT_MAX,
+    IMAGE_UPLOAD_URL_RATE_LIMIT_WINDOW_SECONDS,
+  );
+  if (!allowed) {
+    return { success: false, error: "rate_limited" };
   }
 
   const listing = await prisma.listing.findFirst({ where: { id: listingId, deletedAt: null } });
