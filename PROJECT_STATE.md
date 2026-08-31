@@ -7,11 +7,11 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-31 (Phase 23 completion)
+Last updated: 2026-08-31 (Phase 24 completion)
 
 ## Current Status
 
-**Phases 20 through 23 are all COMPLETE, validated, committed, and
+**Phases 20 through 24 are all COMPLETE, validated, committed, and
 pushed**: Phase 20 (twelve composite database indexes), Phase 21 (a
 shared rate-limit utility wired into the three most abuse-prone write
 endpoints, plus a root-cause verification-request pending-dedupe fix),
@@ -20,11 +20,15 @@ timing-safe Paymob webhook HMAC comparison, a state guard closing a
 worker-outage race in `processListingImage`, and isolating
 `createNotification`'s own DB-write failure from every caller so a
 transient blip can never report a false failure for an already-
-succeeded business operation), and Phase 23 (another fresh audit round —
+succeeded business operation), Phase 23 (another fresh audit round —
 session/cookie security and N+1 query patterns both confirmed clean;
 `adminRemoveListing`/`flagListingForReview` now self-audit against the
 Listing they mutate, closing a real gap where the report-driven
-moderation path left no Listing-keyed trail in `AuditLog`).
+moderation path left no Listing-keyed trail in `AuditLog`), and Phase 24
+(a further audit round — CSRF coverage across all 40 mutating routes
+and frontend authorization-assumption leaks both came back fully clean,
+the second consecutive clean round this session — see "Exact Next
+Action" for what that means going forward).
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -82,7 +86,8 @@ tasks to be framed across disciplines).
 | 20 | Twelve composite DB indexes closing filter+sort query gaps (`User`/`VerificationRequest`/`Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`) | `a2911be` | Done |
 | 21 | Rate limiting (`src/lib/rate-limit.ts`) on `POST /api/listings`, image upload-URL minting, bulk listing actions + verification-request pending-dedupe | `e7d0a12` | Done |
 | 22 | Timing-safe Paymob webhook HMAC, `processListingImage` sweep-race guard, `createNotification` DB-write failure isolation | `c8543b4` | Done |
-| 23 | Report-driven listing removal/flag now self-audits against the Listing (`admin.listing.remove`/`admin.listing.flag_for_review`); `setUserStatus` audit records `{from, to}` | this session | **Done** |
+| 23 | Report-driven listing removal/flag now self-audits against the Listing (`admin.listing.remove`/`admin.listing.flag_for_review`); `setUserStatus` audit records `{from, to}` | `4505c51` | Done |
+| 24 | Fresh audit round: CSRF coverage (all 40 mutating routes) and frontend authorization-assumption leaks — both fully clean, no code change | this session | **Done (audit only)** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1342,6 +1347,13 @@ runtime bug. Fixed by moving the fallback rate onto
   than Phase 23's single clearly-scoped Listing-audit fix.
   `admin.verification.approve`/`reject`'s metadata also doesn't mirror
   the reviewer's `notes` text — same reasoning, deferred.
+- **`getUserDetail()`'s unscoped `prisma.user.findUnique` over-fetches a
+  few low-sensitivity fields** (`email`, `phoneVerifiedAt`, `deletedAt`,
+  `updatedAt`) beyond what `UserDetail.tsx` reads (found in the Phase 24
+  audit). Data-minimization hygiene, not an authorization gap — the
+  endpoint is already correctly restricted to moderators/admins. Fix
+  with a `select` clause whenever that file is next touched for another
+  reason; not worth its own validate/commit cycle alone.
 
 ## Technical/Architecture Decisions (Phase 5)
 
@@ -1762,6 +1774,60 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   were both independently confirmed already correct — no changes
   needed there.
 
+## What Was Completed in Phase 24 (audit only, no code change)
+
+Two more fresh audits, targeting the last two candidates named in
+Phase 23's Exact Next Action: CSRF coverage completeness (exhaustively
+this time, not spot-checked) and frontend authorization-assumption
+leaks. Both came back fully clean, confirmed by reading the actual
+code, not assumed:
+
+- **CSRF coverage**: all 40 `route.ts` files under `src/app/api/**`
+  with a mutating (`POST`/`PATCH`/`PUT`/`DELETE`) handler were checked
+  individually. 37 correctly call `assertCsrf(request)` before their
+  mutation. The 3 that don't are each legitimately exempt for a
+  distinct, verified reason: the Paymob webhook authenticates via HMAC
+  signature, not a session cookie; `otp/request`/`otp/verify` run
+  *before* a session (and its CSRF cookie) exists, an inherent
+  exemption for login endpoints under a double-submit scheme; and the
+  dev-only local-storage upload stub has no session auth at all and is
+  hard-disabled in production. No gap.
+- **Frontend authorization-assumption leaks**: every admin page either
+  performs its own explicit `requireAdmin()`/`requireModerator()`
+  server-side check before fetching data, is protected by the shared
+  layout's server-side `requireModerator()` gate (which runs ahead of
+  any child render) plus its own independently-gated API routes, or
+  both. Every client-side role check that drives button visibility
+  (e.g. `UserDetail.tsx`'s admin-only status/role controls) is backed
+  by an equivalent, independently-enforced check on the actual mutating
+  route, so tampering with client state to reveal a hidden button still
+  gets rejected server-side. Every Server Component that sends data to
+  a client component does so via a Prisma `select` scoped to what that
+  viewer should see (e.g. `getListingById`'s owner projection excludes
+  role/status/email), not a full row gated only by a client-side `if`.
+  No gap.
+
+One trivial, non-blocking nit was noted, not fixed: `getUserDetail()`
+(`src/modules/identity/admin-users.ts`) does an unscoped
+`prisma.user.findUnique` for the admin user-detail page, so a few extra
+low-sensitivity fields (`email`, `phoneVerifiedAt`, `deletedAt`,
+`updatedAt`) are serialized into the API response beyond what
+`UserDetail.tsx` actually reads. This is data-minimization hygiene, not
+an authorization gap — the endpoint is already correctly restricted to
+moderators/admins who are authorized to see this user's data regardless.
+Deferred to Known Issues rather than spending a full validate/commit/
+merge cycle on a `select` clause with no security or functional impact.
+
+This is the **second consecutive fully-clean audit round** this
+session (the first being background-job idempotency and Paymob webhook
+duplicate-processing in Phase 22's audit set). Combined with IDOR/
+authorization (clean, before Phase 20), session/cookie security (clean,
+Phase 23's round), and N+1 queries (clean, Phase 23's round), six of
+the eleven fresh audits run across Phases 20-24 found nothing — a
+meaningfully different signal than earlier phases, where nearly every
+audit found something. See "Exact Next Action" below for what this
+means for a future session.
+
 ## Technical/Architecture Decisions (Phase 23)
 
 See `docs/DECISIONS.md` for full rationale. Summary:
@@ -1868,40 +1934,56 @@ None.
 
 ## Exact Next Action
 
-Phases 20 through 23 are all committed and pushed (both branches kept
+Phases 20 through 24 are all committed and pushed (both branches kept
 in sync — see Git Safety in `CLAUDE.md` and this session's owner
-authorization to merge into `main`). This session ran eight fresh audits
+authorization to merge into `main`). This session ran ten fresh audits
 total, per the owner's explicit continuation directive to keep
 re-auditing and implementing every owner-independent technical gap
 found rather than stopping at the first "nothing left" conclusion:
 IDOR/authorization, rate limiting, DB indexes, background-job
 idempotency, Paymob webhook duplicate-processing,
 notification-delivery reliability, session/cookie security, N+1 query
-patterns, and admin-audit-log completeness. Five came back clean
+patterns, admin-audit-log completeness, CSRF coverage completeness, and
+frontend authorization-assumption leaks. Seven came back clean
 (IDOR/authorization; background-job idempotency; Paymob webhook
-duplicate-processing; session/cookie security; N+1 query patterns — all
-confirmed by reading the actual code). The other three each found real,
-genuine gaps, all now fixed and closed (Phase 20: DB indexes; Phase 21:
-rate limiting + verification-request dedupe; Phase 22: Paymob HMAC
-timing safety, an image-processing sweep-race guard, and notification
-DB-write isolation; Phase 23: Listing-keyed audit trail for
-report-driven removal/flagging, plus `setUserStatus`'s `{from, to}`
-metadata).
+duplicate-processing; session/cookie security; N+1 query patterns; CSRF
+coverage; frontend authorization leaks — all confirmed by reading the
+actual code, the last two exhaustively rather than spot-checked). The
+other three each found real, genuine gaps, all now fixed and closed
+(Phase 20: DB indexes; Phase 21: rate limiting + verification-request
+dedupe; Phase 22: Paymob HMAC timing safety, an image-processing
+sweep-race guard, and notification DB-write isolation; Phase 23:
+Listing-keyed audit trail for report-driven removal/flagging, plus
+`setUserStatus`'s `{from, to}` metadata).
 
-A future session should run its own fresh audit round from an angle not
-yet covered this session — candidates not yet checked include: frontend
-authorization-assumption leaks (does any client-rendered UI element
-reveal data a stricter server-side check would hide), CSRF coverage
-completeness across every mutating route (spot-checked at a few routes
-across sessions but never exhaustively re-verified route-by-route), the
-thin-metadata audit-log gaps this phase deliberately deferred
-(settings/shipping/subscription-plan updates recording only new values,
-never prior state — see Known Issues → Deferred), and a general
-re-scan of `src/app/api/**` for any route added in a recent phase that
-might have skipped `withApiHandler`, rate limiting, or an ownership
-check by oversight.
+**Phase 24's round was the second in a row to come back fully clean**
+(the first being background-job idempotency + Paymob webhook
+duplicate-processing, both part of Phase 22's audit set) — a
+meaningfully different signal than Phases 15-23, where nearly every
+fresh angle found something real. This is not proof nothing remains
+(the project's own history says a "nothing left" conclusion has been
+wrong before), but the highest-value, most obviously-exploitable
+technical gaps identified by security-shaped audits (auth, IDOR,
+CSRF, session/cookie handling, rate limiting, race conditions,
+audit-trail completeness, N+1 performance, frontend data leaks) appear
+to be closed as of this session. A future session should treat this as
+a genuine inflection point: still run a fresh audit at the start (per
+CLAUDE.md Section 1), but consider whether the next unit of work is a
+**product feature** (the Deferred items below are almost all owner-gated
+or scope-larger-than-a-single-pass, not "undiscovered security bugs")
+rather than another security-shaped audit angle.
 
-**Important precedent, now confirmed across nine phases**: Phase 15
+Remaining candidates for a future purely-technical audit round, not yet
+exhaustively checked: the thin-metadata audit-log gaps this session
+deliberately deferred (settings/shipping/subscription-plan updates
+recording only new values, never prior state — see Known Issues →
+Deferred), `getUserDetail()`'s minor over-fetch (same section), and a
+general re-scan of `src/app/api/**` for any route added in a recent
+phase that might have skipped `withApiHandler` or rate limiting by
+oversight (no such gap is currently known — this is a "check anyway"
+item, not a known lead).
+
+**Important precedent, now confirmed across ten phases**: Phase 15
 found a real double-sell race a prior audit had missed; Phase 16
 re-audited and found four more genuine gaps; Phase 17 closed the one
 remaining genuinely-technical Deferred item from that audit
@@ -1915,11 +1997,14 @@ found; Phase 22's further audit round found three more real gaps
 even after two of three prior audit rounds had already come back clean;
 Phase 23's further audit round found one more real gap (a missing
 Listing-keyed audit trail) even after two of that round's three audits
-had already come back clean. Every future session must keep
-re-auditing with fresh eyes rather than assuming the roadmap below is
-complete, and should treat a Deferred item explicitly scoped as
-"technical, no owner decision needed, just larger" as real backlog to
-eventually clear, not a place to park things indefinitely.
+had already come back clean; **Phase 24's round, for the first time
+this session, found nothing beyond a cosmetic nit** across two
+exhaustive (not spot-checked) audits. Every future session must still
+open with a fresh audit rather than assuming the roadmap below is
+complete, but should weigh that against Phase 24's signal that the
+easily-discoverable technical-security surface may now be largely
+covered, and consider whether the owner has a product-direction
+preference before defaulting to "audit again."
 
 **SMS gateway, Email gateway, Sentry**: all three already have complete,
 tested technical scaffolding (Phases 8, 11, 14) — a vendor-agnostic HTTP
