@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
-import { createListing } from "@/modules/catalog/listings";
+import { createListing, listListingsByOwner } from "@/modules/catalog/listings";
 import { updatePlatformSettings } from "@/modules/settings/settings";
 
 const createdUserIds: string[] = [];
@@ -81,5 +81,66 @@ describe("createListing", () => {
 
     const activeCount = await prisma.listing.count({ where: { ownerId: owner.id, status: "ACTIVE" } });
     expect(activeCount).toBe(1);
+  });
+});
+
+describe("listListingsByOwner", () => {
+  afterEach(async () => {
+    await prisma.listing.deleteMany({ where: { ownerId: { in: createdUserIds } } });
+    await prisma.category.deleteMany({ where: { id: { in: createdCategoryIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    createdUserIds.length = 0;
+    createdCategoryIds.length = 0;
+  });
+
+  it("paginates results and reports accurate totals", async () => {
+    const owner = await makeUser();
+    const category = await makeCategory();
+    for (let i = 0; i < 5; i++) {
+      await prisma.listing.create({
+        data: { ownerId: owner.id, categoryId: category.id, title: `إعلان ${i}`, status: "ACTIVE" },
+      });
+    }
+
+    const firstPage = await listListingsByOwner(owner.id, { limit: 2, page: 1 });
+    expect(firstPage.items).toHaveLength(2);
+    expect(firstPage.totalCount).toBe(5);
+    expect(firstPage.totalPages).toBe(3);
+
+    const lastPage = await listListingsByOwner(owner.id, { limit: 2, page: 3 });
+    expect(lastPage.items).toHaveLength(1);
+  });
+
+  it("never returns another owner's listings, and excludes soft-deleted ones", async () => {
+    const owner = await makeUser();
+    const other = await makeUser();
+    const category = await makeCategory();
+    await prisma.listing.create({
+      data: { ownerId: other.id, categoryId: category.id, title: "ليس لك", status: "ACTIVE" },
+    });
+    await prisma.listing.create({
+      data: {
+        ownerId: owner.id,
+        categoryId: category.id,
+        title: "محذوف",
+        status: "REMOVED",
+        deletedAt: new Date(),
+      },
+    });
+
+    const result = await listListingsByOwner(owner.id, {});
+    expect(result.items).toHaveLength(0);
+    expect(result.totalCount).toBe(0);
+  });
+
+  it("clamps an out-of-range limit to the maximum", async () => {
+    const owner = await makeUser();
+    const category = await makeCategory();
+    await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "إعلان", status: "ACTIVE" },
+    });
+
+    const result = await listListingsByOwner(owner.id, { limit: 10_000 });
+    expect(result.items).toHaveLength(1);
   });
 });

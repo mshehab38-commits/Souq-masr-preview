@@ -117,8 +117,9 @@ Requires session + CSRF + ownership. Marks the listing `SOLD`.
 
 ### `GET /api/listings/mine`
 
-Requires session. Returns the current user's own listings (all
-statuses, including `DRAFT`/`SOLD`/`EXPIRED`).
+Requires session. Paginated (`?page=`/`?limit=`, default 20, max 100).
+Returns `{ items, page, totalPages, totalCount }` — the current user's
+own listings (all statuses, including `DRAFT`/`SOLD`/`EXPIRED`).
 
 ### `POST /api/listings/[id]/favorite`
 
@@ -292,8 +293,9 @@ or an admin; `403` otherwise.
 
 ### `GET /api/orders/buying` / `GET /api/orders/selling`
 
-Requires session. Lists the caller's own orders as a buyer or as a
-seller, respectively.
+Requires session. Paginated (`?page=`/`?limit=`, default 20, max 100).
+Returns `{ items, page, totalPages, totalCount }` — the caller's own
+orders as a buyer or as a seller, respectively.
 
 ### `POST /api/orders/[id]/transition`
 
