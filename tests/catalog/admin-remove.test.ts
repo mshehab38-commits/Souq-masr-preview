@@ -32,12 +32,13 @@ describe("adminRemoveListing", () => {
 
   it("removes a listing regardless of who owns it — no ownerId scoping", async () => {
     const owner = await makeUser();
+    const moderator = await makeUser();
     const category = await makeCategory();
     const listing = await prisma.listing.create({
       data: { ownerId: owner.id, categoryId: category.id, title: "إعلان مخالف", status: "ACTIVE" },
     });
 
-    const removed = await adminRemoveListing(listing.id);
+    const removed = await adminRemoveListing(listing.id, moderator.id);
     expect(removed).toBe(true);
 
     const updated = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
@@ -45,8 +46,26 @@ describe("adminRemoveListing", () => {
     expect(updated.deletedAt).not.toBeNull();
   });
 
+  it("records a Listing-keyed audit entry so 'what happened to listing X' is answerable from AuditLog alone", async () => {
+    const owner = await makeUser();
+    const moderator = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "إعلان مخالف آخر", status: "ACTIVE" },
+    });
+
+    await adminRemoveListing(listing.id, moderator.id);
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { targetType: "Listing", targetId: listing.id, action: "admin.listing.remove" },
+    });
+    expect(entry).not.toBeNull();
+    expect(entry!.actorId).toBe(moderator.id);
+  });
+
   it("returns false for a listing that's already removed", async () => {
     const owner = await makeUser();
+    const moderator = await makeUser();
     const category = await makeCategory();
     const listing = await prisma.listing.create({
       data: {
@@ -58,10 +77,11 @@ describe("adminRemoveListing", () => {
       },
     });
 
-    expect(await adminRemoveListing(listing.id)).toBe(false);
+    expect(await adminRemoveListing(listing.id, moderator.id)).toBe(false);
   });
 
   it("returns false for a nonexistent listing", async () => {
-    expect(await adminRemoveListing("does-not-exist")).toBe(false);
+    const moderator = await makeUser();
+    expect(await adminRemoveListing("does-not-exist", moderator.id)).toBe(false);
   });
 });

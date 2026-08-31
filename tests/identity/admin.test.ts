@@ -70,6 +70,23 @@ describe("setUserStatus", () => {
     expect(activeSessions).toBe(0);
   });
 
+  it("records the previous status alongside the new one in the audit entry", async () => {
+    const user = await makeUser();
+    const admin = await makeUser({ role: "ADMIN" });
+
+    await setUserStatus(user.id, "SUSPENDED", admin.id);
+    const suspendEntry = await prisma.auditLog.findFirst({
+      where: { targetType: "User", targetId: user.id, action: "admin.user.suspend" },
+    });
+    expect(suspendEntry?.metadata).toEqual({ from: "ACTIVE", to: "SUSPENDED" });
+
+    await setUserStatus(user.id, "BANNED", admin.id);
+    const banEntry = await prisma.auditLog.findFirst({
+      where: { targetType: "User", targetId: user.id, action: "admin.user.ban" },
+    });
+    expect(banEntry?.metadata).toEqual({ from: "SUSPENDED", to: "BANNED" });
+  });
+
   it("reactivating does not touch sessions (no revocation needed for ACTIVE)", async () => {
     const user = await makeUser({ status: "SUSPENDED" });
     const admin = await makeUser({ role: "ADMIN" });

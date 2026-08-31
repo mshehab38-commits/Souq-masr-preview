@@ -87,6 +87,12 @@ export async function setUserStatus(
   status: UserStatusChange,
   actorId: string,
 ): Promise<boolean> {
+  const existing = await prisma.user.findFirst({
+    where: { id: userId, deletedAt: null },
+    select: { status: true },
+  });
+  if (!existing) return false;
+
   const result = await prisma.user.updateMany({
     where: { id: userId, deletedAt: null },
     data: { status },
@@ -102,7 +108,7 @@ export async function setUserStatus(
 
   const action =
     status === "SUSPENDED" ? "admin.user.suspend" : status === "BANNED" ? "admin.user.ban" : "admin.user.reactivate";
-  await recordAudit({ actorId, action, targetType: "User", targetId: userId });
+  await recordAudit({ actorId, action, targetType: "User", targetId: userId, metadata: { from: existing.status, to: status } });
 
   return true;
 }

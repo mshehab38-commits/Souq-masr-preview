@@ -1377,3 +1377,94 @@ also fixed:
    best-effort, never allowed to break something else" design — not
    worth building transactional claim+notify machinery to close a
    narrow, low-severity, silent-loss edge case.
+
+## Phase 23: three more fresh audits (session/cookie security, N+1 queries — both clean) found a real Listing-audit-trail gap in the report-driven moderation path
+
+Continuing the same "keep re-auditing with fresh eyes" precedent, three
+more angles not yet checked this session were audited directly against
+the code (not trusted from doc comments):
+
+- **Session/cookie security flags**: confirmed clean. The session
+  cookie is `httpOnly: true`, `secure` is environment-conditional
+  (`NODE_ENV === "production"`), `sameSite: "lax"`, `path: "/"`, and its
+  `expires` mirrors the DB-authoritative 30-day `Session.expiresAt`,
+  which `getSessionUser` re-validates (along with `revokedAt`) on every
+  request, not just at issuance — so even an unexpectedly long-lived
+  browser cookie can't outlive server-side revocation. The CSRF cookie
+  is deliberately `httpOnly: false`, which is *correct* for this
+  double-submit pattern (`src/lib/client-cookies.ts`'s `readCookie`
+  reads it via `document.cookie` to echo it back as the `x-csrf-token`
+  header) — not an inconsistency with the session cookie's `httpOnly:
+  true`. Logout both revokes the session server-side and deletes both
+  cookies client-side via Next.js's `cookies().delete(...)`, which
+  queues an expired `Set-Cookie` — no stale-cookie-after-logout gap.
+- **N+1 query patterns**: confirmed clean across every list-returning
+  service function (`listListingsByOwner`, `listOrdersFor{Buyer,Seller}`,
+  `listFavoriteListings`, `listUsers`, `listReports`, `listNotifications`,
+  `listStorePublicListings`, the search provider's two query shapes) and
+  every Server Component page that renders a list — all batch relations
+  via Prisma `include`/`select` in the same query, and the one place
+  that could plausibly have hidden a per-listing counting loop
+  (`getSellerStats`) correctly uses `groupBy`/`aggregate`/`count`
+  instead. No page calls an async per-row fetch inside a `.map()`. One
+  low-impact aside was noted, not fixed: `notifyMatchingSavedSearches`
+  does roughly 2×M extra queries for M matching users on a new listing —
+  but it runs off the background search-indexing queue, not a
+  user-facing request path, and it's the same intentional per-user
+  claim-then-notify design already accepted as a trade-off above; not
+  worth batching at the cost of that design's simplicity for a
+  background job whose M is realistically small.
+- **Admin/moderator audit-log completeness**: this is where the real
+  gap was. Every one of the 16 mutating routes under
+  `src/app/api/admin/**` does call `recordAudit`, directly or via its
+  service function — no route goes completely unaudited. But
+  `adminRemoveListing()` and `flagListingForReview()`
+  (`src/modules/catalog/listings.ts`), reachable only through
+  `resolveReport()` (`src/modules/moderation/reports.ts`), never
+  produced a `Listing`-keyed audit row — only the generic
+  `admin.report.resolve` entry keyed to the `Report`, which didn't even
+  record the listing's id in its metadata. Querying `AuditLog` for
+  `targetType: "Listing", targetId: X` — the natural way to answer "what
+  happened to this listing and who did it" — returned nothing for a
+  report-driven removal or flag, even though a moderator had in fact
+  acted on it. This was a real asymmetry within `resolveReport` itself:
+  its third dispatchable action, `SUSPEND_USER`, calls `setUserStatus`,
+  which *does* self-audit against the `User` it mutates — only the two
+  listing-mutating actions were missing the equivalent.
+
+  Fixed by making `adminRemoveListing(listingId, actorId)` and
+  `flagListingForReview(listingId, actorId)` self-audit against the
+  `Listing`, mirroring `setUserStatus`'s exact pattern (audit inside the
+  function that holds the authority, not at the call site) — new
+  `admin.listing.remove` / `admin.listing.flag_for_review` actions.
+  Both functions gained a required `actorId` parameter (previously
+  neither took one, since neither had ever needed to audit). Also added
+  `listingId`/`targetUserId` to `admin.report.resolve`'s own metadata,
+  so the Report-level entry is self-describing about its target even
+  though the authoritative, entity-keyed record now lives on the
+  Listing/User itself.
+
+  While in the same file, also closed a smaller, related inconsistency:
+  `setUserStatus`'s audit entries (`admin.user.suspend`/`ban`/
+  `reactivate`) recorded only the new status, never the previous one —
+  unlike `setUserRole` two functions below it in the same file, which
+  already captures `{from, to}`. Now `setUserStatus` reads the prior
+  status before updating and records `{from, to}` too, so an admin
+  escalating `SUSPENDED → BANNED` is distinguishable from `ACTIVE →
+  BANNED` directly from the audit log, without needing point-in-time
+  reconstruction from elsewhere.
+
+  **Deliberately deferred, not fixed this phase** (real but lower-value,
+  and larger in scope — see `PROJECT_STATE.md`'s Known Issues): several
+  settings/config-mutation audit entries (`settings.update`, the three
+  shipping-company/rate/commission update actions, `subscription_plan.update`,
+  `subscription.revoke`) record only the new/submitted values, never the
+  prior state, so "what did this setting change *from*" isn't
+  reconstructable from `AuditLog` alone (only "what it changed *to*").
+  Closing this properly means reading the pre-update row in five
+  separate modules (`settings`, `shipping`, `subscriptions`) before each
+  write — a real, legitimate improvement, but a distinctly bigger and
+  separate unit of work than the single, clearly-scoped Listing-audit
+  gap this phase closes, and not the highest-value item found this
+  round. `admin.verification.approve`/`reject`'s metadata also doesn't
+  mirror the reviewer's `notes` text — same reasoning, deferred.

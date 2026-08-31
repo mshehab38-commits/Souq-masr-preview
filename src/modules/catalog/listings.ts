@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { recordAudit } from "@/lib/audit";
 import { Prisma } from "@prisma/client";
 import type { FulfillmentMode } from "@prisma/client";
 import { searchIndexQueue } from "@/jobs/queues";
@@ -344,12 +345,19 @@ export async function softDeleteListing(listingId: string, ownerId: string): Pro
 // caller isn't the owner), kept as its own explicit function rather than an
 // `isAdmin` branch on `softDeleteListing` so the authority behind each call
 // site stays visible at a glance.
-export async function adminRemoveListing(listingId: string): Promise<boolean> {
+// Self-audits against the Listing it mutates (mirrors setUserStatus's
+// pattern in identity/admin-users.ts) — a moderator resolving a report
+// with this action previously only produced a Report-keyed audit entry
+// that didn't even name the listing, making "what happened to listing X"
+// unanswerable from AuditLog alone. See docs/DECISIONS.md.
+export async function adminRemoveListing(listingId: string, actorId: string): Promise<boolean> {
   const result = await prisma.listing.updateMany({
     where: { id: listingId, deletedAt: null },
     data: { deletedAt: new Date(), status: "REMOVED" },
   });
-  return result.count > 0;
+  if (result.count === 0) return false;
+  await recordAudit({ actorId, action: "admin.listing.remove", targetType: "Listing", targetId: listingId });
+  return true;
 }
 
 // Moderator-initiated soft escalation — a reviewable alternative to
@@ -358,12 +366,14 @@ export async function adminRemoveListing(listingId: string): Promise<boolean> {
 // deleted, so it can be restored to ACTIVE without the seller re-creating
 // it. Only applies from ACTIVE — flagging an already-sold/expired/removed
 // listing isn't a meaningful transition.
-export async function flagListingForReview(listingId: string): Promise<boolean> {
+export async function flagListingForReview(listingId: string, actorId: string): Promise<boolean> {
   const result = await prisma.listing.updateMany({
     where: { id: listingId, deletedAt: null, status: "ACTIVE" },
     data: { status: "PENDING_REVIEW" },
   });
-  return result.count > 0;
+  if (result.count === 0) return false;
+  await recordAudit({ actorId, action: "admin.listing.flag_for_review", targetType: "Listing", targetId: listingId });
+  return true;
 }
 
 export interface PendingReviewListingsFilter {

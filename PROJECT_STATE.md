@@ -7,20 +7,24 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-31 (Phase 22 completion)
+Last updated: 2026-08-31 (Phase 23 completion)
 
 ## Current Status
 
-**Phases 20, 21, and 22 are all COMPLETE, validated, committed, and
+**Phases 20 through 23 are all COMPLETE, validated, committed, and
 pushed**: Phase 20 (twelve composite database indexes), Phase 21 (a
 shared rate-limit utility wired into the three most abuse-prone write
 endpoints, plus a root-cause verification-request pending-dedupe fix),
-and Phase 22 (three more fixes from a further audit round: a
+Phase 22 (three more fixes from a further audit round: a
 timing-safe Paymob webhook HMAC comparison, a state guard closing a
 worker-outage race in `processListingImage`, and isolating
 `createNotification`'s own DB-write failure from every caller so a
 transient blip can never report a false failure for an already-
-succeeded business operation).
+succeeded business operation), and Phase 23 (another fresh audit round —
+session/cookie security and N+1 query patterns both confirmed clean;
+`adminRemoveListing`/`flagListingForReview` now self-audit against the
+Listing they mutate, closing a real gap where the report-driven
+moderation path left no Listing-keyed trail in `AuditLog`).
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -77,7 +81,8 @@ tasks to be framed across disciplines).
 | 19 | Pre-publish-review admin toggle: `requirePrePublishReview` on `PlatformSettings`, scaffolding only, default off | `03b16dc` | Done |
 | 20 | Twelve composite DB indexes closing filter+sort query gaps (`User`/`VerificationRequest`/`Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`) | `a2911be` | Done |
 | 21 | Rate limiting (`src/lib/rate-limit.ts`) on `POST /api/listings`, image upload-URL minting, bulk listing actions + verification-request pending-dedupe | `e7d0a12` | Done |
-| 22 | Timing-safe Paymob webhook HMAC, `processListingImage` sweep-race guard, `createNotification` DB-write failure isolation | this session | **Done** |
+| 22 | Timing-safe Paymob webhook HMAC, `processListingImage` sweep-race guard, `createNotification` DB-write failure isolation | `c8543b4` | Done |
+| 23 | Report-driven listing removal/flag now self-audits against the Listing (`admin.listing.remove`/`admin.listing.flag_for_review`); `setUserStatus` audit records `{from, to}` | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -879,6 +884,53 @@ Three real, fixable gaps were found and fixed:
 - No product/business decision involved — three purely technical
   correctness fixes.
 
+## What Was Completed in Phase 23
+
+Per the standing "keep re-auditing with fresh eyes" precedent, three
+more fresh audits ran on ground not yet checked this session: session/
+cookie security flags, N+1 query patterns across every list-returning
+service function and Server Component page, and admin/moderator
+audit-log completeness. Two came back clean, confirmed by reading the
+actual code:
+
+- **Session/cookie security**: `httpOnly`/`secure`(env-conditional)/
+  `sameSite: lax`/`path: /` are all correctly set on the session cookie;
+  the CSRF cookie's `httpOnly: false` is the *correct*, required choice
+  for its double-submit pattern, not an inconsistency; session expiry is
+  re-validated server-side on every request, not just at issuance; and
+  logout both revokes server-side and clears both cookies client-side.
+- **N+1 queries**: every list-returning service function batches its
+  relations via Prisma `include`/`select` in one query (or parallel
+  `groupBy`/`aggregate`/`count` for `getSellerStats`, the one place that
+  could have hidden a per-listing loop); no Server Component page calls
+  a per-row async fetch inside a `.map()`.
+
+One real, genuine gap was found and fixed:
+
+- **`adminRemoveListing()` and `flagListingForReview()`
+  (`src/modules/catalog/listings.ts`) now self-audit against the
+  `Listing` they mutate** — new `admin.listing.remove`/
+  `admin.listing.flag_for_review` audit actions, both functions now take
+  a required `actorId`. Previously, the only path to either function
+  (`resolveReport` in `src/modules/moderation/reports.ts`) produced a
+  `Report`-keyed audit entry that didn't even record the listing's id —
+  so "what happened to listing X" was unanswerable from `AuditLog`
+  alone for the entire report-driven moderation path, unlike the
+  parallel `SUSPEND_USER` action which was already properly
+  self-audited by `setUserStatus`. Also added `listingId`/`targetUserId`
+  to `admin.report.resolve`'s own metadata for the same reason.
+- **`setUserStatus`'s audit entries now record `{from, to}`**, not just
+  the new status — closes a small inconsistency with `setUserRole`
+  (same file), which already captured this.
+- No product/business decision involved — a pure audit-trail
+  completeness fix, no financial value, no behavior change visible to
+  any user or admin beyond richer `AuditLog` rows.
+
+Several thin-metadata audit gaps (settings/shipping/subscription-plan
+updates recording only new values, never prior state) were found and
+deliberately deferred — see Known Issues → Deferred below; a real but
+larger, separate unit of work than this phase's clearly-scoped fix.
+
 ## Bug Found and Fixed in Phase 5
 
 **`OrderCancelledBy` enum was missing `ADMIN`.** `transitions.ts`'s
@@ -916,6 +968,26 @@ runtime bug. Fixed by moving the fallback rate onto
   `Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`). Schema at
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
+
+## Tests & Results (Phase 23, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (224 modules, 798 dependencies —
+  unchanged module count; pure code fixes to existing files, no new
+  module files).
+- `npm test` — **357/357 unit tests passing** across 46 files. New this
+  phase: a Listing-keyed audit-entry assertion in
+  `tests/catalog/admin-remove.test.ts` and `tests/catalog/pending-review.test.ts`,
+  two matching assertions added to the existing `resolveReport`
+  `REMOVE_LISTING`/`FLAG_FOR_REVIEW` tests in
+  `tests/moderation/moderation.test.ts`, and a `{from, to}` metadata
+  assertion in `tests/identity/admin.test.ts`.
+- `npx playwright test` — see below (this phase touches no UI/route
+  surface, only internal audit-log writes, so no e2e spec needed
+  changes).
+- `npm run build` — clean, warning-free production build; no new
+  routes.
 
 ## Tests & Results (Phase 22, all green)
 
@@ -1256,6 +1328,20 @@ runtime bug. Fixed by moving the fallback rate onto
   every user; there's no way for a user to opt out of a notification
   type. Not urgent at current volume; revisit if it becomes a
   complaint.
+- **Several admin/config-mutation audit entries record only the
+  new/submitted values, never the prior state** (found in the Phase 23
+  audit): `settings.update`, `shipping_company.update`,
+  `shipping_rate.upsert`, `shipping_commission_rule.update`,
+  `subscription_plan.update`, and `subscription.revoke` (which records
+  only the subscription id, not the affected `userId`/`planId`). "What
+  did this change *from*" isn't reconstructable from `AuditLog` alone
+  for any of these — only "what it changed *to*." Closing this properly
+  means reading the pre-update row in three separate modules
+  (`settings`, `shipping`, `subscriptions`) before each write — a real,
+  legitimate improvement, but a distinctly larger, separate unit of work
+  than Phase 23's single clearly-scoped Listing-audit fix.
+  `admin.verification.approve`/`reject`'s metadata also doesn't mirror
+  the reviewer's `notes` text — same reasoning, deferred.
 
 ## Technical/Architecture Decisions (Phase 5)
 
@@ -1676,6 +1762,27 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   were both independently confirmed already correct — no changes
   needed there.
 
+## Technical/Architecture Decisions (Phase 23)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `adminRemoveListing`/`flagListingForReview` now self-audit against the
+  `Listing` they mutate (audit inside the function that holds the
+  authority, mirroring `setUserStatus`'s existing pattern), rather than
+  relying solely on the caller's Report-level audit entry.
+- Both functions gained a required `actorId` parameter — previously
+  neither took one, since neither had ever needed to audit.
+- `admin.report.resolve`'s own metadata now also records
+  `listingId`/`targetUserId`, so the Report-level entry is
+  self-describing about its target even though the authoritative,
+  entity-keyed record now lives on the Listing/User itself.
+- `setUserStatus`'s audit entries now record `{from, to}`, matching
+  `setUserRole`'s existing convention in the same file, so a
+  `SUSPENDED → BANNED` escalation is distinguishable from `ACTIVE →
+  BANNED` directly from `AuditLog`.
+- Session/cookie security and N+1 query patterns were both independently
+  audited and confirmed already correct — no changes needed there.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -1761,32 +1868,40 @@ None.
 
 ## Exact Next Action
 
-Phases 20, 21, and 22 are all committed and pushed (both branches kept
+Phases 20 through 23 are all committed and pushed (both branches kept
 in sync — see Git Safety in `CLAUDE.md` and this session's owner
-authorization to merge into `main`). This session ran five fresh audits
+authorization to merge into `main`). This session ran eight fresh audits
 total, per the owner's explicit continuation directive to keep
 re-auditing and implementing every owner-independent technical gap
 found rather than stopping at the first "nothing left" conclusion:
 IDOR/authorization, rate limiting, DB indexes, background-job
-idempotency, Paymob webhook duplicate-processing, and
-notification-delivery reliability. Two came back clean
+idempotency, Paymob webhook duplicate-processing,
+notification-delivery reliability, session/cookie security, N+1 query
+patterns, and admin-audit-log completeness. Five came back clean
 (IDOR/authorization; background-job idempotency; Paymob webhook
-duplicate-processing — three of the six, all confirmed by reading the
-actual code). The other three each found real, genuine gaps, all now
-fixed and closed (Phase 20: DB indexes; Phase 21: rate limiting +
-verification-request dedupe; Phase 22: Paymob HMAC timing safety, an
-image-processing sweep-race guard, and notification DB-write isolation).
+duplicate-processing; session/cookie security; N+1 query patterns — all
+confirmed by reading the actual code). The other three each found real,
+genuine gaps, all now fixed and closed (Phase 20: DB indexes; Phase 21:
+rate limiting + verification-request dedupe; Phase 22: Paymob HMAC
+timing safety, an image-processing sweep-race guard, and notification
+DB-write isolation; Phase 23: Listing-keyed audit trail for
+report-driven removal/flagging, plus `setUserStatus`'s `{from, to}`
+metadata).
 
 A future session should run its own fresh audit round from an angle not
-yet covered this session — candidates not yet checked include: N+1
-query patterns in list/detail endpoints, session/cookie security flags,
-CSRF coverage completeness (spot-checked but not exhaustively
-re-verified this session), frontend authorization-assumption leaks
-(does any client-rendered UI element reveal data a stricter
-server-side check would hide), and admin-audit-log completeness across
-every mutating admin action.
+yet covered this session — candidates not yet checked include: frontend
+authorization-assumption leaks (does any client-rendered UI element
+reveal data a stricter server-side check would hide), CSRF coverage
+completeness across every mutating route (spot-checked at a few routes
+across sessions but never exhaustively re-verified route-by-route), the
+thin-metadata audit-log gaps this phase deliberately deferred
+(settings/shipping/subscription-plan updates recording only new values,
+never prior state — see Known Issues → Deferred), and a general
+re-scan of `src/app/api/**` for any route added in a recent phase that
+might have skipped `withApiHandler`, rate limiting, or an ownership
+check by oversight.
 
-**Important precedent, now confirmed across eight phases**: Phase 15
+**Important precedent, now confirmed across nine phases**: Phase 15
 found a real double-sell race a prior audit had missed; Phase 16
 re-audited and found four more genuine gaps; Phase 17 closed the one
 remaining genuinely-technical Deferred item from that audit
@@ -1797,12 +1912,14 @@ own re-audit of "nothing technical left" found twelve missing composite
 indexes; Phase 21 closed the rate-limiting gap the same audit round
 found; Phase 22's further audit round found three more real gaps
 (timing-safe HMAC, a job-race guard, notification-failure isolation)
-even after two of three prior audit rounds had already come back clean.
-Every future session must keep re-auditing with fresh eyes rather than
-assuming the roadmap below is complete, and should treat a Deferred
-item explicitly scoped as "technical, no owner decision needed, just
-larger" as real backlog to eventually clear, not a place to park things
-indefinitely.
+even after two of three prior audit rounds had already come back clean;
+Phase 23's further audit round found one more real gap (a missing
+Listing-keyed audit trail) even after two of that round's three audits
+had already come back clean. Every future session must keep
+re-auditing with fresh eyes rather than assuming the roadmap below is
+complete, and should treat a Deferred item explicitly scoped as
+"technical, no owner decision needed, just larger" as real backlog to
+eventually clear, not a place to park things indefinitely.
 
 **SMS gateway, Email gateway, Sentry**: all three already have complete,
 tested technical scaffolding (Phases 8, 11, 14) — a vendor-agnostic HTTP

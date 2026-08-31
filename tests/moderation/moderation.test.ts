@@ -231,6 +231,12 @@ describe("resolveReport", () => {
 
     const updatedReport = await prisma.report.findUniqueOrThrow({ where: { id: created.report.id } });
     expect(updatedReport.status).toBe("ACTION_TAKEN");
+
+    const listingAudit = await prisma.auditLog.findFirst({
+      where: { targetType: "Listing", targetId: listing.id, action: "admin.listing.remove" },
+    });
+    expect(listingAudit).not.toBeNull();
+    expect(listingAudit!.actorId).toBe(moderator.id);
   });
 
   it("resolves with SUSPEND_USER and revokes the target's active sessions", async () => {
@@ -287,6 +293,12 @@ describe("resolveReport", () => {
 
     const updatedReport = await prisma.report.findUniqueOrThrow({ where: { id: created.report.id } });
     expect(updatedReport.status).toBe("ACTION_TAKEN");
+
+    const listingAudit = await prisma.auditLog.findFirst({
+      where: { targetType: "Listing", targetId: listing.id, action: "admin.listing.flag_for_review" },
+    });
+    expect(listingAudit).not.toBeNull();
+    expect(listingAudit!.actorId).toBe(moderator.id);
   });
 
   it("refuses to resolve a report that's already been resolved", async () => {

@@ -47,11 +47,29 @@ describe("flagListingForReview", () => {
       data: { ownerId: owner.id, categoryId: category.id, title: "إعلان مشكوك فيه", status: "ACTIVE" },
     });
 
-    expect(await flagListingForReview(listing.id)).toBe(true);
+    const moderator = await makeUser("MODERATOR");
+    expect(await flagListingForReview(listing.id, moderator.id)).toBe(true);
 
     const updated = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
     expect(updated.status).toBe("PENDING_REVIEW");
     expect(updated.deletedAt).toBeNull();
+  });
+
+  it("records a Listing-keyed audit entry", async () => {
+    const owner = await makeUser();
+    const moderator = await makeUser("MODERATOR");
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "إعلان مشكوك فيه آخر", status: "ACTIVE" },
+    });
+
+    await flagListingForReview(listing.id, moderator.id);
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { targetType: "Listing", targetId: listing.id, action: "admin.listing.flag_for_review" },
+    });
+    expect(entry).not.toBeNull();
+    expect(entry!.actorId).toBe(moderator.id);
   });
 
   it("refuses to flag a listing that isn't ACTIVE", async () => {
@@ -61,7 +79,8 @@ describe("flagListingForReview", () => {
       data: { ownerId: owner.id, categoryId: category.id, title: "إعلان مباع", status: "SOLD" },
     });
 
-    expect(await flagListingForReview(listing.id)).toBe(false);
+    const moderator = await makeUser("MODERATOR");
+    expect(await flagListingForReview(listing.id, moderator.id)).toBe(false);
   });
 });
 
