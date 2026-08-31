@@ -26,4 +26,8 @@ export type {
   ListUsersFilter,
   UserStatusChange,
 } from "./admin-users";
-export type { ListVerificationRequestsFilter, VerificationDecision } from "./verification";
+export type {
+  ListVerificationRequestsFilter,
+  GetVerificationRequestsFilter,
+  VerificationDecision,
+} from "./verification";

@@ -18,15 +18,31 @@ export async function submitVerificationRequest(
   });
 }
 
-export async function getVerificationRequests(userId: string) {
-  return prisma.verificationRequest.findMany({
-    where: { userId },
-    orderBy: { createdAt: "desc" },
-  });
-}
-
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+
+export interface GetVerificationRequestsFilter {
+  page?: number;
+  limit?: number;
+}
+
+export async function getVerificationRequests(userId: string, filter: GetVerificationRequestsFilter = {}) {
+  const limit = Math.min(Math.max(filter.limit || DEFAULT_LIMIT, 1), MAX_LIMIT);
+  const page = Math.max(filter.page || 1, 1);
+  const where = { userId };
+
+  const [items, totalCount] = await Promise.all([
+    prisma.verificationRequest.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.verificationRequest.count({ where }),
+  ]);
+
+  return { items, page, totalPages: Math.max(1, Math.ceil(totalCount / limit)), totalCount };
+}
 
 export interface ListVerificationRequestsFilter {
   status?: VerificationRequestStatus;

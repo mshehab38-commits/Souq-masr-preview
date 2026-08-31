@@ -52,3 +52,4 @@ export {
   deleteListingImage,
 } from "./images";
 export { toggleFavorite, listFavoriteListings } from "./favorites";
+export type { ListFavoriteListingsFilter } from "./favorites";
