@@ -1517,3 +1517,18 @@ low-sensitivity fields (`email`, `phoneVerifiedAt`, `deletedAt`,
 gap — the endpoint is already correctly restricted to moderators/
 admins. Not worth a dedicated validate/commit/merge cycle on its own;
 deferred to whenever that file is next touched for another reason.
+
+## Phase 25: `getUserDetail()` scoped to an explicit `select` — the owner explicitly requested this specific fix
+
+Per the owner's explicit, narrow request, `getUserDetail()`'s
+`prisma.user.findUnique` now has an explicit `select` covering exactly
+the 7 fields `UserDetail.tsx` reads (`id`, `name`, `phone`, `role`,
+`status`, `commerceVerifiedAt`, `createdAt`), removing `email`,
+`phoneVerifiedAt`, `deletedAt`, and `updatedAt` from the
+`GET /api/admin/users/[id]` response. No other code reads
+`getUserDetail`'s return type (confirmed via grep), so this is a pure
+narrowing with no breaking change to the one real caller. No business
+logic, authorization, or schema change — data-minimization hygiene
+only, matching the nit's original characterization above (which is now
+struck through in `PROJECT_STATE.md`'s Known Issues rather than
+removed, per this repo's established resolved-item convention).

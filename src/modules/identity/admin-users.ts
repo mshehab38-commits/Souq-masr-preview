@@ -51,8 +51,23 @@ export async function listUsers(filter: ListUsersFilter): Promise<ListUsersResul
   return { items, page, totalPages: Math.max(1, Math.ceil(totalCount / limit)), totalCount };
 }
 
+// Scoped to exactly the fields the admin user-detail page reads
+// (src/app/admin/users/[id]/UserDetail.tsx) — an unscoped findUnique
+// would over-fetch and serialize low-sensitivity but unused fields
+// (email, phoneVerifiedAt, deletedAt, updatedAt) into the API response.
 export async function getUserDetail(userId: string) {
-  const user = await prisma.user.findUnique({ where: { id: userId } });
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      name: true,
+      phone: true,
+      role: true,
+      status: true,
+      commerceVerifiedAt: true,
+      createdAt: true,
+    },
+  });
   if (!user) return null;
 
   const [listingCount, buyerOrderCount, sellerOrderCount, reportsMadeCount, reportsReceivedCount] =
