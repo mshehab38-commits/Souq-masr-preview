@@ -48,6 +48,24 @@ describe("listUsers / getUserDetail", () => {
   it("returns null for a nonexistent user", async () => {
     expect(await getUserDetail("does-not-exist")).toBeNull();
   });
+
+  it("scopes the returned user to only the fields the admin detail page reads", async () => {
+    const user = await makeUser({ email: "seller@example.com" });
+    const detail = await getUserDetail(user.id);
+    expect(detail?.user).toEqual({
+      id: user.id,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      status: user.status,
+      commerceVerifiedAt: user.commerceVerifiedAt,
+      createdAt: user.createdAt,
+    });
+    expect(detail?.user).not.toHaveProperty("email");
+    expect(detail?.user).not.toHaveProperty("phoneVerifiedAt");
+    expect(detail?.user).not.toHaveProperty("deletedAt");
+    expect(detail?.user).not.toHaveProperty("updatedAt");
+  });
 });
 
 describe("setUserStatus", () => {

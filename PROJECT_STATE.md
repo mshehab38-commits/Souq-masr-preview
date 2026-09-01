@@ -7,11 +7,11 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-08-31 (Phase 24 completion)
+Last updated: 2026-09-01 (Phase 25 completion)
 
 ## Current Status
 
-**Phases 20 through 24 are all COMPLETE, validated, committed, and
+**Phases 20 through 25 are all COMPLETE, validated, committed, and
 pushed**: Phase 20 (twelve composite database indexes), Phase 21 (a
 shared rate-limit utility wired into the three most abuse-prone write
 endpoints, plus a root-cause verification-request pending-dedupe fix),
@@ -24,11 +24,13 @@ succeeded business operation), Phase 23 (another fresh audit round —
 session/cookie security and N+1 query patterns both confirmed clean;
 `adminRemoveListing`/`flagListingForReview` now self-audit against the
 Listing they mutate, closing a real gap where the report-driven
-moderation path left no Listing-keyed trail in `AuditLog`), and Phase 24
+moderation path left no Listing-keyed trail in `AuditLog`), Phase 24
 (a further audit round — CSRF coverage across all 40 mutating routes
 and frontend authorization-assumption leaks both came back fully clean,
-the second consecutive clean round this session — see "Exact Next
-Action" for what that means going forward).
+the second consecutive clean round this session), and Phase 25 (closed
+Phase 24's one cosmetic finding: `getUserDetail()` now uses an explicit
+Prisma `select`, no longer over-fetching low-sensitivity fields into
+the admin API response).
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -87,7 +89,8 @@ tasks to be framed across disciplines).
 | 21 | Rate limiting (`src/lib/rate-limit.ts`) on `POST /api/listings`, image upload-URL minting, bulk listing actions + verification-request pending-dedupe | `e7d0a12` | Done |
 | 22 | Timing-safe Paymob webhook HMAC, `processListingImage` sweep-race guard, `createNotification` DB-write failure isolation | `c8543b4` | Done |
 | 23 | Report-driven listing removal/flag now self-audits against the Listing (`admin.listing.remove`/`admin.listing.flag_for_review`); `setUserStatus` audit records `{from, to}` | `4505c51` | Done |
-| 24 | Fresh audit round: CSRF coverage (all 40 mutating routes) and frontend authorization-assumption leaks — both fully clean, no code change | this session | **Done (audit only)** |
+| 24 | Fresh audit round: CSRF coverage (all 40 mutating routes) and frontend authorization-assumption leaks — both fully clean, no code change | ef1f166 | Done (audit only) |
+| 25 | `getUserDetail()` scoped to an explicit Prisma `select` — closes the Phase 24 data-minimization nit | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -974,6 +977,23 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
+## Tests & Results (Phase 25, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (224 modules, 798 dependencies —
+  unchanged; a `select` clause added to an existing query, no new
+  module files).
+- `npm test` — **358/358 unit tests passing** across 46 files. New this
+  phase: a regression test in `tests/identity/admin.test.ts` asserting
+  `getUserDetail()`'s returned `user` object matches exactly the 7
+  expected fields and explicitly lacks `email`/`phoneVerifiedAt`/
+  `deletedAt`/`updatedAt`.
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified.
+- `npm run build` — clean, warning-free production build; no new
+  routes, no response-shape change for the one real consumer
+  (`UserDetail.tsx`).
+
 ## Tests & Results (Phase 23, all green)
 
 - `npm run typecheck` — clean.
@@ -1347,13 +1367,11 @@ runtime bug. Fixed by moving the fallback rate onto
   than Phase 23's single clearly-scoped Listing-audit fix.
   `admin.verification.approve`/`reject`'s metadata also doesn't mirror
   the reviewer's `notes` text — same reasoning, deferred.
-- **`getUserDetail()`'s unscoped `prisma.user.findUnique` over-fetches a
-  few low-sensitivity fields** (`email`, `phoneVerifiedAt`, `deletedAt`,
+- ~~`getUserDetail()`'s unscoped `prisma.user.findUnique` over-fetches a
+  few low-sensitivity fields~~ (`email`, `phoneVerifiedAt`, `deletedAt`,
   `updatedAt`) beyond what `UserDetail.tsx` reads (found in the Phase 24
-  audit). Data-minimization hygiene, not an authorization gap — the
-  endpoint is already correctly restricted to moderators/admins. Fix
-  with a `select` clause whenever that file is next touched for another
-  reason; not worth its own validate/commit cycle alone.
+  audit) — **resolved in Phase 25**: an explicit `select` now scopes the
+  query to exactly the 7 fields the admin page reads.
 
 ## Technical/Architecture Decisions (Phase 5)
 
@@ -1828,6 +1846,24 @@ meaningfully different signal than earlier phases, where nearly every
 audit found something. See "Exact Next Action" below for what this
 means for a future session.
 
+## What Was Completed in Phase 25
+
+Closed the one cosmetic finding from Phase 24's frontend
+authorization-leak audit: `getUserDetail()`
+(`src/modules/identity/admin-users.ts`) now scopes its
+`prisma.user.findUnique` with an explicit `select` covering exactly the
+7 fields the admin user-detail page
+(`src/app/admin/users/[id]/UserDetail.tsx`) reads (`id`, `name`,
+`phone`, `role`, `status`, `commerceVerifiedAt`, `createdAt`) —
+`email`, `phoneVerifiedAt`, `deletedAt`, and `updatedAt` are no longer
+serialized into the `GET /api/admin/users/[id]` response. No other
+consumer of `getUserDetail`'s return type exists, so the one real
+caller's response shape is unchanged in structure, only narrower in
+the fields it excludes. No business logic, authorization, or migration
+changed. Data-minimization hygiene only — not a fix for an actual
+authorization gap, since the endpoint was already correctly restricted
+to moderators/admins who are entitled to see this user's data.
+
 ## Technical/Architecture Decisions (Phase 23)
 
 See `docs/DECISIONS.md` for full rationale. Summary:
@@ -1934,9 +1970,11 @@ None.
 
 ## Exact Next Action
 
-Phases 20 through 24 are all committed and pushed (both branches kept
+Phases 20 through 25 are all committed and pushed (both branches kept
 in sync — see Git Safety in `CLAUDE.md` and this session's owner
-authorization to merge into `main`). This session ran ten fresh audits
+authorization to merge into `main`). Phase 25 closed Phase 24's one
+remaining cosmetic finding (`getUserDetail()`'s over-fetch); nothing
+new was audited in Phase 25 itself. This session ran ten fresh audits
 total, per the owner's explicit continuation directive to keep
 re-auditing and implementing every owner-independent technical gap
 found rather than stopping at the first "nothing left" conclusion:
