@@ -52,5 +52,5 @@ export {
   confirmImageUpload,
   deleteListingImage,
 } from "./images";
-export { toggleFavorite, listFavoriteListings } from "./favorites";
+export { toggleFavorite, listFavoriteListings, isListingFavorited } from "./favorites";
 export type { ListFavoriteListingsFilter } from "./favorites";

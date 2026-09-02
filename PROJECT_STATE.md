@@ -7,11 +7,11 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-09-01 (Phase 26 completion)
+Last updated: 2026-09-02 (Phase 27 completion)
 
 ## Current Status
 
-**Phases 20 through 26 are all COMPLETE, validated, committed, and
+**Phases 20 through 27 are all COMPLETE, validated, committed, and
 pushed**: Phase 20 (twelve composite database indexes), Phase 21 (a
 shared rate-limit utility wired into the three most abuse-prone write
 endpoints, plus a root-cause verification-request pending-dedupe fix),
@@ -37,7 +37,17 @@ the Paymob webhook now independently cross-checks the paid amount/
 currency against the target order's own snapshotted total before ever
 marking it `CAPTURED`, closing a real defense-in-depth gap where a
 valid HMAC signature alone was trusted as proof the amount applied to
-the right order).
+the right order), and Phase 27 (a product-gap prioritization pass —
+with the technical/security audit backlog largely closed, this session
+identified and built the highest-value owner-independent product gap:
+a `/favorites` page. `toggleFavorite`/`listFavoriteListings` and a
+paginated `GET /api/favorites` had existed since Phase 3/18, and every
+listing detail page has had an "add to favorites" button the whole
+time, but no page anywhere let a user view their favorited listings —
+`docs/API.md` had explicitly flagged this as "no UI consumer" since
+Phase 18. Also fixed a related bug found while building it: the
+favorite button always rendered as "not favorited" on page load
+regardless of the viewer's actual prior state).
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -98,7 +108,8 @@ tasks to be framed across disciplines).
 | 23 | Report-driven listing removal/flag now self-audits against the Listing (`admin.listing.remove`/`admin.listing.flag_for_review`); `setUserStatus` audit records `{from, to}` | `4505c51` | Done |
 | 24 | Fresh audit round: CSRF coverage (all 40 mutating routes) and frontend authorization-assumption leaks — both fully clean, no code change | ef1f166 | Done (audit only) |
 | 25 | `getUserDetail()` scoped to an explicit Prisma `select` — closes the Phase 24 data-minimization nit | 1a39277 | Done |
-| 26 | Completed financial-integrity audit; fixed a real gap — Paymob webhook now cross-checks amount/currency against the order before capturing | this session | **Done** |
+| 26 | Completed financial-integrity audit; fixed a real gap — Paymob webhook now cross-checks amount/currency against the order before capturing | 75653f8 | Done |
+| 27 | Product-gap prioritization → built the missing `/favorites` page (backend existed since Phase 3/18, no UI consumer until now) + fixed the favorite-button's stale initial-state bug | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -984,6 +995,24 @@ runtime bug. Fixed by moving the fallback rate onto
   `Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`). Schema at
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
+
+## Tests & Results (Phase 27, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (227 modules, 813 dependencies —
+  two new page files, no new module-boundary violations).
+- `npm test` — **367/367 unit tests passing** across 46 files. New this
+  phase: 3 tests for `isListingFavorited()`
+  (`tests/catalog/favorites.test.ts`) covering the true/false/
+  scoped-per-user cases.
+- `npx playwright test` — **9/9 e2e specs passing** (new
+  `e2e/favorites-flow.spec.ts`: favorite a listing from its detail
+  page, confirm the button's state survives a reload — the initial-
+  state bug's regression proof — see it on `/favorites`, remove it from
+  there, and confirm the detail page's button reflects the removal too).
+- `npm run build` — clean, warning-free production build; one new
+  route (`/favorites`).
 
 ## Tests & Results (Phase 26, all green)
 
@@ -1904,6 +1933,43 @@ changed. Data-minimization hygiene only — not a fix for an actual
 authorization gap, since the endpoint was already correctly restricted
 to moderators/admins who are entitled to see this user's data.
 
+## What Was Completed in Phase 27
+
+With the technical/security audit backlog largely closed (Phases 20-26:
+7 of 11 fresh audits fully clean, financial-integrity 5-of-7 clean),
+this session ran a product-gap prioritization pass instead of another
+audit round, per the owner's explicit direction. The clearest,
+best-evidenced, owner-independent gap: a "my favorites" page.
+`toggleFavorite`/`listFavoriteListings` and a paginated
+`GET /api/favorites` have existed since Phase 3/18 and every listing
+detail page has had a working "add to favorites" button the whole
+time — but no page anywhere let a user view the list of listings
+they'd favorited. `docs/API.md` had explicitly flagged this as
+"no UI consumer exists yet" since Phase 18. No pricing, commission, or
+business-policy decision was needed — this was purely wiring an
+already-built, already-tested backend to a missing frontend page.
+
+- **New `/favorites` page** (`src/app/favorites/page.tsx` +
+  `FavoritesGrid.tsx`) — mirrors the established "my own paginated
+  list" pattern (`/listings/mine`, `/orders`, `/saved-searches`):
+  auth-gated Server Component, `UrlPagination`, a card grid matching
+  `/search`'s result-card visual pattern, a status badge for any
+  favorited listing that's since gone `SOLD`/etc., and a "remove from
+  favorites" button per card using the existing toggle endpoint.
+- **New nav link** — added once to the single shared `NAV_LINKS.loggedIn`
+  array (`src/components/layout/nav-links.ts`), so both the desktop nav
+  and the mobile hamburger menu pick it up automatically with no risk
+  of the two drifting apart.
+- **Fixed a related bug found while building this**: the listing detail
+  page's favorite button always rendered "not favorited" on load
+  regardless of the viewer's actual prior state (`useState(false)`,
+  never checked against the DB). Fixed with a new, small, unit-tested
+  `isListingFavorited()` function threaded down as an `initialFavorited`
+  prop — directly in the same feature area this phase was already
+  touching, not scope creep.
+- No financial value, commission, or business policy touched anywhere
+  in this phase.
+
 ## What Was Completed in Phase 26
 
 Per the owner's "continue the work fully" instruction, completed the
@@ -1991,6 +2057,29 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   confirmed genuinely unbuilt (not a bug) and intentionally left
   alone — it's a larger, separate unit of work gated on an open owner
   decision (D7/D8 below).
+
+## Technical/Architecture Decisions (Phase 27)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- The favorites grid reuses `/search`'s exact card visual pattern
+  (`Card`/`Image`/`PriceTag` composition) rather than inventing a new
+  one, and the page/pagination shell reuses the established
+  "my own paginated list" pattern (`/listings/mine`, `/orders`,
+  `/saved-searches`) — no new UI pattern introduced for this feature.
+- The new nav link was added to the single shared `NAV_LINKS.loggedIn`
+  array rather than editing `SiteHeader.tsx`/`MobileNav.tsx` directly,
+  so both nav surfaces stay in sync automatically, matching how every
+  other nav entry is already maintained.
+- `isListingFavorited()` was added as its own small function (not
+  folded into `getListingById` or `toggleFavorite`) since it's a
+  single, cheap, independently-reusable check — the same shape as
+  `toggleFavorite`'s own internal existence check, just exposed for a
+  second caller (the page) to use without mutating anything.
+- This phase deliberately chose a product-gap fix over another audit
+  round, per the owner's explicit Phase 27 instruction — the technical/
+  security audit backlog was treated as sufficiently covered (Phases
+  20-26) to justify shifting toward product completion instead.
 
 ## OWNER DECISION REQUIRED — Resolved
 

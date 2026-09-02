@@ -1612,3 +1612,59 @@ One genuine, real gap was found and fixed:
   refund handling is a larger, separate unit of work with its own
   owner-facing questions (a cancellation/refund fee policy is already
   flagged open in `BUSINESS_MODEL.md` §8).
+
+## Phase 27: product-gap prioritization pointed at a missing "my favorites" page, not another audit — built it, plus a related favorite-button bug found along the way
+
+With ten of eleven fresh technical/security audits across Phases 20-26
+coming back clean or mostly clean, this session's next unit of work was
+chosen as a product-gap analysis rather than another audit round. The
+clearest, most evidence-backed gap: `toggleFavorite`/`listFavoriteListings`
+have existed since Phase 3, `GET /api/favorites` has been paginated and
+tested since Phase 18, and a "add to favorites" heart button has sat on
+every listing's detail page the whole time — but **no page anywhere in
+the app let a user actually view their favorited listings.**
+`docs/API.md` had explicitly documented this as "no UI consumer exists
+yet" since Phase 18. This is exactly the shape of gap Phase 27 was
+looking for: real, evidence-backed, zero owner/business decision needed
+(no pricing, no policy — favorites themselves were already an accepted
+feature), and the backend was already built and tested, so the unit of
+work was purely "wire an existing, working API to a missing page."
+
+- **New `/favorites` page** (`src/app/favorites/page.tsx` + client grid
+  `FavoritesGrid.tsx`) — mirrors the established "my own paginated list"
+  pattern used by `/listings/mine`, `/orders`, `/saved-searches`: a
+  Server Component redirects to `/login` if unauthenticated, fetches via
+  `listFavoriteListings`, and renders `UrlPagination`. The card grid
+  itself mirrors `/search`'s result-card layout (same `Card`/`Image`/
+  `PriceTag` composition) rather than inventing a new visual pattern,
+  plus a status badge for any favorited listing that's since gone
+  `SOLD`/`EXPIRED`/etc. (reusing `/listings/mine`'s exact status-label
+  map) and a "remove from favorites" button per card that calls the
+  already-existing `POST /api/listings/[id]/favorite` toggle endpoint.
+- **New nav link** (`src/components/layout/nav-links.ts`) — added once
+  to the single shared `NAV_LINKS.loggedIn` array that already drives
+  both the desktop nav (`SiteHeader.tsx`) and the mobile hamburger menu
+  (`MobileNav.tsx`), so the new page is discoverable from both without
+  touching either nav component directly or risking the two drifting
+  out of sync.
+- **A related, pre-existing bug found and fixed while building this**:
+  `ListingDetailActions.tsx`'s favorite button always initialized to
+  "not favorited" (`useState(false)`) regardless of whether the viewer
+  had actually already favorited that listing — nothing had ever
+  queried that before rendering the button, since the toggle-only
+  `POST` endpoint has no reason to check prior state. A user who
+  favorited a listing, then revisited its detail page later, would see
+  "أضف للمفضلة" (add to favorites) instead of "مضاف للمفضلة ✓" (already
+  added) until they clicked it again — a real, if minor, correctness
+  bug directly in the same feature area this phase was already
+  touching, not scope creep. Fixed with a new, small, unit-tested
+  `isListingFavorited(userId, listingId)` function
+  (`src/modules/catalog/favorites.ts`), called once in the listing
+  detail page's Server Component and threaded down as an
+  `initialFavorited` prop — no new query pattern, no schema change,
+  same shape as the existing single-row `Favorite` lookup `toggleFavorite`
+  already does internally.
+- **No financial/business decision involved anywhere** — this phase
+  touches no pricing, commission, or policy value; it is pure
+  frontend/product completion of an already-approved, already-built
+  feature.

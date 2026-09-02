@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
-import { listFavoriteListings } from "@/modules/catalog/favorites";
+import { listFavoriteListings, isListingFavorited } from "@/modules/catalog/favorites";
 
 const createdUserIds: string[] = [];
 const createdCategoryIds: string[] = [];
@@ -78,5 +78,40 @@ describe("listFavoriteListings", () => {
 
     const result = await listFavoriteListings(user.id, { limit: 10_000 });
     expect(result.items).toHaveLength(1);
+  });
+});
+
+describe("isListingFavorited", () => {
+  afterEach(cleanup);
+
+  it("returns true once the user has favorited the listing", async () => {
+    const user = await makeUser();
+    const owner = await makeUser();
+    const category = await makeCategory();
+    const favorite = await makeFavorite(user.id, owner.id, category.id);
+
+    expect(await isListingFavorited(user.id, favorite.listingId)).toBe(true);
+  });
+
+  it("returns false when the user has never favorited the listing", async () => {
+    const user = await makeUser();
+    const owner = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "إعلان غير مفضل", status: "ACTIVE" },
+    });
+
+    expect(await isListingFavorited(user.id, listing.id)).toBe(false);
+  });
+
+  it("is scoped per user — one user's favorite doesn't leak into another's check", async () => {
+    const user = await makeUser();
+    const other = await makeUser();
+    const owner = await makeUser();
+    const category = await makeCategory();
+    const favorite = await makeFavorite(other.id, owner.id, category.id);
+
+    expect(await isListingFavorited(user.id, favorite.listingId)).toBe(false);
+    expect(await isListingFavorited(other.id, favorite.listingId)).toBe(true);
   });
 });

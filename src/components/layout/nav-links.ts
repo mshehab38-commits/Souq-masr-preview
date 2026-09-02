@@ -8,6 +8,7 @@ export const NAV_LINKS = {
     { href: "/dashboard", label: "لوحة التحكم" },
     { href: "/listings/mine", label: "إعلاناتي" },
     { href: "/orders", label: "طلباتي" },
+    { href: "/favorites", label: "المفضلة" },
     { href: "/saved-searches", label: "بحث محفوظ" },
   ],
   newListing: { href: "/listings/new", label: "+ أضف إعلان" },

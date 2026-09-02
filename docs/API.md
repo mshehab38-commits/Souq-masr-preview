@@ -186,10 +186,10 @@ its underlying storage objects.
 
 Requires session. Paginated (`?page=`/`?limit=`, default 20, max 100).
 Returns `{ items, page, totalPages, totalCount }` — the current user's
-favorited listings. No UI consumer exists yet (favorites are only
-toggled from a listing's detail page); this route is documented API
-surface for a future client, same as `/api/orders/buying`,
-`/api/orders/selling`, and `/api/listings/mine`.
+favorited listings. Consumed by `/favorites` (Phase 27) — a "my
+favorites" page was missing entirely until then, even though the
+favorite-toggle button on every listing's detail page has existed
+since Phase 3.
 
 ## Stores (Phase 4)
 
