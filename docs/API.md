@@ -352,10 +352,15 @@ buyer as `PLATFORM_SHIPPING` options.
 
 Returns `503` unless `PAYMOB_API_KEY`/`PAYMOB_INTEGRATION_ID`/
 `PAYMOB_IFRAME_ID`/`PAYMOB_HMAC_SECRET` are all set. Once configured,
-verifies the webhook's HMAC signature before updating the linked order's
-`paymentStatus` to `CAPTURED`/`FAILED`. Exists now so the route can be
-registered as Paymob's callback URL the moment real credentials are
-supplied, without a code change then.
+verifies the webhook's HMAC signature, then — for a `CAPTURED` payload —
+independently cross-checks the paid `amount_cents`/`currency` against the
+target order's own snapshotted `totalAmount`/`currency` before updating
+`paymentStatus`. A valid signature only proves the payload is
+authentically from Paymob; it does not by itself prove the amount applies
+to the right order, so a mismatch is logged and the order is left
+untouched rather than captured. Exists now so the route can be registered
+as Paymob's callback URL the moment real credentials are supplied,
+without a code change then.
 
 ## Admin: Platform Settings (Phase 5)
 

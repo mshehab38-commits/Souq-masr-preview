@@ -1532,3 +1532,83 @@ logic, authorization, or schema change — data-minimization hygiene
 only, matching the nit's original characterization above (which is now
 struck through in `PROJECT_STATE.md`'s Known Issues rather than
 removed, per this repo's established resolved-item convention).
+
+## Phase 26: the completed financial-integrity audit found a real gap — Paymob webhook now cross-checks amount/currency against the order, not just the HMAC signature
+
+Per the owner's "continue the work fully" instruction, the
+financial/business-logic integrity audit (originally requested as part
+of the Phase 20-24 comprehensive audit round, but interrupted mid-run
+without ever delivering results) was re-run to completion. Five of its
+seven checks came back clean, confirmed by reading the actual code:
+
+- **Order state machine**: exhaustive, correctly guarded transitions;
+  money amounts snapshotted once at checkout, never re-read live; the
+  Phase 15 double-sell fix (a conditional `updateMany` inside the same
+  transaction as `order.create`) is still correctly in place.
+- **Ledger**: every `recordLedgerEntry()` call requires an explicit
+  `account`, no inference; `getLedgerSummary()` filters to
+  `PLATFORM_REVENUE` before summing, so product-sale proceeds
+  (tagged `SELLER_PAYABLE`) structurally cannot enter the platform's own
+  revenue figure.
+- **Subscriptions**: no auto-charge/cron/recurring-billing logic exists
+  anywhere — `grantSubscription()`/`revokeSubscription()` are
+  exclusively one-shot admin actions, matching the documented
+  no-self-serve-purchase-yet state; pricing is always DB-read
+  (`SubscriptionPlan.monthlyPrice`/`yearlyPrice`), never hardcoded, and
+  fails closed (`plan_not_priced`) if unset rather than defaulting to a
+  number.
+- **Shipping commission**: `computeShippingCommission()` multiplies only
+  the *percentage* of the shipping fee, never the fee itself, and
+  returns `0` whenever no active rule exists — never an invented rate.
+  The Phase 5 nullable-governorate-uniqueness fix is still correctly in
+  place at the schema level.
+- **Hardcoded financial values**: none found anywhere in application
+  code — every price/percentage/commission/fee value traced back to a
+  DB field the owner configures via an admin route/UI.
+
+One genuine, real gap was found and fixed:
+
+- **The Paymob webhook never verified the paid amount/currency against
+  the target order before marking it `CAPTURED`.** The HMAC check
+  (already timing-safe since Phase 22) proves a payload is authentically
+  from Paymob, but proves nothing about whether that amount applies to
+  the *specific* order it names — `WebhookVerificationResult` didn't
+  even surface `amount_cents`/`currency` from the payload for a caller
+  to check. `merchant_order_id` is set by our own server at
+  registration time, so a naive "edit the JSON body" attack is already
+  blocked by the signature — but a future retry/idempotency bug, a
+  manually-created Paymob order via a support tool, an integration
+  misconfiguration, or a Paymob-side amount edit after registration
+  would all still be blindly trusted. Standard payment-integration
+  practice is to always independently re-verify amount+currency against
+  the order record server-side, since a signature only proves
+  authenticity, never applicability. Fixed by:
+  1. Extending `WebhookVerificationResult` with `amountCents`/`currency`,
+     populated from the (already HMAC-verified) payload.
+  2. A new pure, unit-tested function,
+     `webhookAmountMatchesOrder(order, verification)`
+     (`src/modules/payments/webhook-amount.ts`) — compares in cents (the
+     gateway's own unit) rather than converting cents to a float, to
+     avoid floating-point comparison entirely.
+  3. The webhook route now fetches the order's `totalAmount`/`currency`
+     before ever capturing, and refuses (logs an error, leaves the
+     order `PENDING`) on any mismatch rather than silently trusting the
+     payload.
+  This is a defense-in-depth fix with a bounded blast radius today: the
+  whole route already returns `503` until real Paymob credentials exist
+  (`isOnlinePaymentConfigured()`), so nothing changes in production
+  behavior until online payments actually go live — but it closes the
+  gap before that happens rather than after. No financial value was
+  invented — the fix only compares two numbers that already exist
+  (the order's own snapshotted total, and the gateway's own reported
+  amount), which is squarely engineering autonomy (CLAUDE.md Section 2),
+  not a pricing/commission decision.
+- **Refund/return functionality is confirmed NOT IMPLEMENTED**, not a
+  bug: `RETURNED`/`REFUNDED`/`DISPUTED` exist as wired state-machine
+  transitions with no financial reversal logic behind them (no ledger
+  entry, no listing re-activation, no Paymob refund call) —
+  matches `docs/BUSINESS_MODEL.md` §8's explicit "not built — currently
+  free for both parties." Not fixed this phase since building real
+  refund handling is a larger, separate unit of work with its own
+  owner-facing questions (a cancellation/refund fee policy is already
+  flagged open in `BUSINESS_MODEL.md` §8).
