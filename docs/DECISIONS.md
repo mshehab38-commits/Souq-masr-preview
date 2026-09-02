@@ -1668,3 +1668,66 @@ work was purely "wire an existing, working API to a missing page."
   touches no pricing, commission, or policy value; it is pure
   frontend/product completion of an already-approved, already-built
   feature.
+
+## Phase 28: moved six thin admin audit-log entries into their own module functions, capturing `{from, to}` instead of only the submitted value
+
+Phases 23/24/26 each separately flagged the same gap without fixing it:
+several admin-mutation audit entries were written at the **route**
+layer using only the zod-parsed request body as `metadata` — the value
+an admin *submitted*, never the value it *replaced*. `AuditLog` alone
+could show "the free-listing limit is now 20" but never "...and it was
+10 before this change." Phase 23 already established the fix pattern
+for a different set of functions (`setUserStatus`/`adminRemoveListing`/
+`flagListingForReview`): move `recordAudit` inside the module function
+that holds the authority over the mutation, read the row's prior state
+first, and record `{ from, to }`. This phase applies the exact same
+pattern to the remaining six `update`/`upsert`/`revoke`-shaped admin
+actions that still only recorded the submitted value (or, in one case,
+recorded nothing at all):
+
+- `settings.ts`'s `updatePlatformSettings` — `from` is built from the
+  singleton row's prior values for only the keys present in the admin's
+  input (not every field), so a partial update's audit entry stays
+  scoped to what actually changed.
+- `shipping/companies.ts`'s `updateShippingCompany` — same
+  scoped-`from` pattern; the route's own `not_found` check moved into
+  the module function (it needs the prior row anyway to build `from`).
+- `shipping/rates.ts`'s `upsertShippingRate` — `from` is the prior
+  `flatFee` for that `(shippingCompanyId, governorateId)` pair, or
+  `null` on a first-time insert for that governorate (there is no
+  "prior" value to record).
+- `shipping/commission.ts`'s `setCommissionRule` — same `null`-on-first-set
+  shape as the rate above.
+- `subscriptions/plans.ts`'s `updatePlan` — same scoped-`from` pattern
+  as settings; also fixed a latent Decimal-serialization issue this
+  function introduced: `monthlyPrice`/`yearlyPrice` are Prisma
+  `Decimal` fields, and storing one directly in JSON `metadata` would
+  silently round-trip through its own `toString()` (a string, not a
+  number) instead of a plain numeric value — fixed by converting with
+  `Prisma.Decimal` `instanceof` + `.toNumber()` before building `from`,
+  matching the explicit `Number(...)` conversions `rates.ts`/
+  `commission.ts` already use for their own Decimal fields. The same
+  conversion was applied to `shipping/companies.ts`'s
+  `updateShippingCompany` for its `defaultFlatFee` field, which has the
+  identical issue.
+- `subscriptions/subscriptions.ts`'s `revokeSubscription` — this one
+  previously recorded **zero** metadata at all (not just a thin
+  version). Now reads the subscription first (to get `userId`/`planId`
+  before it's cancelled) and records `{ userId, planId }`.
+
+Each corresponding route handler (`settings`, `shipping-companies/[id]`,
+`.../rates`, `.../commission`, `plans/[id]`, `subscriptions/[id]`) had
+its own now-redundant `recordAudit` call deleted and now just passes
+`admin.id` through as the new `actorId` parameter — the exact same
+route-layer change Phase 23 made for its three functions.
+
+**`create`/`delete`-shaped actions were deliberately left untouched**
+(`shipping_company.create/delete`, `subscription_plan.create/delete`,
+`shipping_company.delete`'s own separate `recordAudit` in the same
+route file): a create has no prior state to record, and a delete's
+existing `targetId`-only metadata is already sufficient — there's no
+partial diff to reconstruct for a full removal. Only actions that
+genuinely replace a value in place had a `from` worth capturing.
+
+This closes the audit-log-completeness gap flagged (but not fixed) in
+Phases 23, 24, and 26's own entries above.

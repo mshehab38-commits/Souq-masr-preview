@@ -41,18 +41,10 @@ export const PATCH = withApiHandler(async (request: Request, context: { params: 
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
-  const result = await updateShippingCompany(id, parsed.data);
+  const result = await updateShippingCompany(id, admin.id, parsed.data);
   if (!result.success) {
     return NextResponse.json(result, { status: 404 });
   }
-
-  await recordAudit({
-    actorId: admin.id,
-    action: "shipping_company.update",
-    targetType: "ShippingCompany",
-    targetId: id,
-    metadata: parsed.data,
-  });
 
   return NextResponse.json({ success: true });
 });

@@ -7,11 +7,11 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-09-02 (Phase 27 completion)
+Last updated: 2026-09-02 (Phase 28 completion)
 
 ## Current Status
 
-**Phases 20 through 27 are all COMPLETE, validated, committed, and
+**Phases 20 through 28 are all COMPLETE, validated, committed, and
 pushed**: Phase 20 (twelve composite database indexes), Phase 21 (a
 shared rate-limit utility wired into the three most abuse-prone write
 endpoints, plus a root-cause verification-request pending-dedupe fix),
@@ -47,7 +47,13 @@ time, but no page anywhere let a user view their favorited listings —
 `docs/API.md` had explicitly flagged this as "no UI consumer" since
 Phase 18. Also fixed a related bug found while building it: the
 favorite button always rendered as "not favorited" on page load
-regardless of the viewer's actual prior state).
+regardless of the viewer's actual prior state), and Phase 28 (closed
+the thin-metadata audit-log gap flagged but not fixed in Phases 23/24/26:
+`updatePlatformSettings`, `updateShippingCompany`, `upsertShippingRate`,
+`setCommissionRule`, `updatePlan`, and `revokeSubscription` now
+self-audit with `{from, to}` metadata, moving `recordAudit` into the
+module layer the same way Phase 23 did for `setUserStatus`/
+`adminRemoveListing`/`flagListingForReview`).
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -109,7 +115,8 @@ tasks to be framed across disciplines).
 | 24 | Fresh audit round: CSRF coverage (all 40 mutating routes) and frontend authorization-assumption leaks — both fully clean, no code change | ef1f166 | Done (audit only) |
 | 25 | `getUserDetail()` scoped to an explicit Prisma `select` — closes the Phase 24 data-minimization nit | 1a39277 | Done |
 | 26 | Completed financial-integrity audit; fixed a real gap — Paymob webhook now cross-checks amount/currency against the order before capturing | 75653f8 | Done |
-| 27 | Product-gap prioritization → built the missing `/favorites` page (backend existed since Phase 3/18, no UI consumer until now) + fixed the favorite-button's stale initial-state bug | this session | **Done** |
+| 27 | Product-gap prioritization → built the missing `/favorites` page (backend existed since Phase 3/18, no UI consumer until now) + fixed the favorite-button's stale initial-state bug | `6b290a1` | Done |
+| 28 | Closed the thin-metadata audit-log gap flagged (not fixed) in Phases 23/24/26: six settings/shipping/subscription admin functions now self-audit with `{from, to}` instead of only the submitted value | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -953,10 +960,13 @@ One real, genuine gap was found and fixed:
   completeness fix, no financial value, no behavior change visible to
   any user or admin beyond richer `AuditLog` rows.
 
-Several thin-metadata audit gaps (settings/shipping/subscription-plan
+~~Several thin-metadata audit gaps (settings/shipping/subscription-plan
 updates recording only new values, never prior state) were found and
-deliberately deferred — see Known Issues → Deferred below; a real but
-larger, separate unit of work than this phase's clearly-scoped fix.
+deliberately deferred~~ — **resolved in Phase 28**: `updatePlatformSettings`,
+`updateShippingCompany`, `upsertShippingRate`, `setCommissionRule`,
+`updatePlan`, and `revokeSubscription` all now self-audit with
+`{from, to}` (or, for `revokeSubscription`, `{userId, planId}` where
+previously there was no metadata at all).
 
 ## Bug Found and Fixed in Phase 5
 
@@ -995,6 +1005,61 @@ runtime bug. Fixed by moving the fallback rate onto
   `Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`). Schema at
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
+
+## What Was Completed in Phase 28
+
+Closed the thin-metadata audit-log gap flagged (but not fixed) in
+Phases 23, 24, and 26's own entries: six admin `update`/`upsert`/
+`revoke` functions previously recorded either only the submitted value
+or (for `revokeSubscription`) nothing at all. Mirrors the exact
+"self-audit inside the module function" pattern Phase 23 already
+established for `setUserStatus`/`adminRemoveListing`/
+`flagListingForReview`:
+
+- `settings.ts`'s `updatePlatformSettings` — now self-audits `{from, to}`
+  scoped to only the changed keys.
+- `shipping/companies.ts`'s `updateShippingCompany` — same, plus fixed a
+  latent Decimal-serialization bug (`defaultFlatFee` is a Prisma
+  `Decimal`; converted via `instanceof Prisma.Decimal` + `.toNumber()`
+  before it reaches JSON metadata).
+- `shipping/rates.ts`'s `upsertShippingRate` — `from` is the prior fee
+  for that governorate, or `null` on a first-time insert.
+- `shipping/commission.ts`'s `setCommissionRule` — same null-on-first-set
+  shape.
+- `subscriptions/plans.ts`'s `updatePlan` — same `{from, to}` pattern;
+  same Decimal fix applied (`monthlyPrice`/`yearlyPrice`).
+- `subscriptions/subscriptions.ts`'s `revokeSubscription` — previously
+  recorded zero metadata; now reads the subscription first and records
+  `{ userId, planId }`.
+
+All six route handlers had their own now-redundant `recordAudit` calls
+removed and now pass `admin.id` through as a new `actorId` parameter.
+`create`/`delete`-shaped actions were deliberately left untouched (no
+"from" state for a create; a delete's `targetId`-only metadata is
+already sufficient). See `docs/DECISIONS.md`'s Phase 28 entry for full
+rationale. No financial/business decision involved — pure audit-trail
+completeness, no behavior change visible to any admin beyond richer
+`AuditLog` rows.
+
+## Tests & Results (Phase 28, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (227 modules, 816 dependencies).
+- `npm test` — **374/374 unit tests passing** across 46 files. New this
+  phase: 1 test in `tests/settings/settings.test.ts` (two sequential
+  updates, second's `from` matches first's `to`), 3 new tests in
+  `tests/shipping/shipping.test.ts` (`updateShippingCompany`,
+  `upsertShippingRate` first-insert-vs-overwrite, `setCommissionRule`
+  first-set-vs-overwrite), 2 new tests in
+  `tests/subscriptions/subscriptions.test.ts` (`updatePlan`'s `{from,
+  to}`, `revokeSubscription`'s new `{userId, planId}` metadata plus a
+  no-double-audit-on-already-cancelled case). Existing call sites in
+  `tests/orders/checkout.test.ts` updated for the new `actorId`
+  parameters.
+- `npx playwright test` — **9/9 e2e specs passing**, unmodified — no
+  route/UI behavior changed, only audit metadata shape.
+- `npm run build` — clean, warning-free production build.
 
 ## Tests & Results (Phase 27, all green)
 
@@ -2166,14 +2231,17 @@ None.
 
 ## Exact Next Action
 
-Phases 20 through 26 are all committed and pushed (both branches kept
+Phases 20 through 28 are all committed and pushed (both branches kept
 in sync — see Git Safety in `CLAUDE.md` and this session's owner
 authorization to merge into `main`). Phase 25 closed Phase 24's one
 remaining cosmetic finding (`getUserDetail()`'s over-fetch). Phase 26
 completed the financial/business-logic integrity audit an earlier
 session had started but never finished, finding and fixing one real
-gap (the Paymob webhook's amount/currency cross-check). This session
-ran eleven fresh audits total, per the owner's explicit continuation
+gap (the Paymob webhook's amount/currency cross-check). Phase 27 built
+the missing `/favorites` page. Phase 28 closed the thin-metadata
+audit-log gap this section used to list as the leading remaining
+candidate — it is no longer open. This session ran eleven fresh audits
+total, per the owner's explicit continuation
 directive to keep re-auditing and implementing every owner-independent
 technical gap found rather than stopping at the first "nothing left"
 conclusion: IDOR/authorization, rate limiting, DB indexes,
@@ -2212,14 +2280,12 @@ a-single-pass, not "undiscovered security/integrity bugs") rather than
 another audit angle.
 
 Remaining candidates for a future purely-technical audit round, not yet
-exhaustively checked: the thin-metadata audit-log gaps this session
-deliberately deferred (settings/shipping/subscription-plan updates
-recording only new values, never prior state — see Known Issues →
-Deferred), `getUserDetail()`'s minor over-fetch (same section), and a
-general re-scan of `src/app/api/**` for any route added in a recent
-phase that might have skipped `withApiHandler` or rate limiting by
-oversight (no such gap is currently known — this is a "check anyway"
-item, not a known lead).
+exhaustively checked: a general re-scan of `src/app/api/**` for any
+route added in a recent phase that might have skipped `withApiHandler`
+or rate limiting by oversight (no such gap is currently known — this is
+a "check anyway" item, not a known lead). The thin-metadata audit-log
+gap and `getUserDetail()`'s over-fetch (both previously listed here) are
+now closed — Phase 25 and Phase 28 respectively.
 
 **Important precedent, now confirmed across ten phases**: Phase 15
 found a real double-sell race a prior audit had missed; Phase 16

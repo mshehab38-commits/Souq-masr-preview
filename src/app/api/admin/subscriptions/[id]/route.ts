@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { revokeSubscription } from "@/modules/subscriptions/service";
-import { recordAudit } from "@/lib/audit";
 import { withApiHandler } from "@/lib/api-handler";
 
 export const DELETE = withApiHandler(async (request: Request, context: { params: Promise<{ id: string }> }) => {
@@ -14,17 +13,10 @@ export const DELETE = withApiHandler(async (request: Request, context: { params:
   }
 
   const { id } = await context.params;
-  const revoked = await revokeSubscription(id);
+  const revoked = await revokeSubscription(id, admin.id);
   if (!revoked) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
-
-  await recordAudit({
-    actorId: admin.id,
-    action: "subscription.revoke",
-    targetType: "Subscription",
-    targetId: id,
-  });
 
   return NextResponse.json({ success: true });
 });

@@ -46,6 +46,7 @@ async function makeListing(
 }
 
 async function cleanup() {
+  await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
   await prisma.order.deleteMany({ where: { sellerId: { in: createdUserIds } } });
   await prisma.listing.deleteMany({ where: { ownerId: { in: createdUserIds } } });
   await prisma.category.deleteMany({ where: { id: { in: createdCategoryIds } } });
@@ -169,8 +170,8 @@ describe("createOrder", () => {
 
     const company = await createShippingCompany({ slug: `co-${Math.random().toString(36).slice(2)}`, name: "شركة شحن" });
     createdCompanyIds.push(company.id);
-    await upsertShippingRate(company.id, governorate.id, 60);
-    await setCommissionRule(company.id, 10);
+    await upsertShippingRate(company.id, seller.id, governorate.id, 60);
+    await setCommissionRule(company.id, seller.id, 10);
 
     const listing = await makeListing(seller.id, category.id, {
       fulfillmentMode: "PLATFORM_SHIPPING",

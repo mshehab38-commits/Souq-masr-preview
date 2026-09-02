@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { listRatesForCompany, upsertShippingRate } from "@/modules/shipping/service";
-import { recordAudit } from "@/lib/audit";
 import { withApiHandler } from "@/lib/api-handler";
 
 export const GET = withApiHandler(async (_request: Request, context: { params: Promise<{ id: string }> }) => {
@@ -36,15 +35,7 @@ export const POST = withApiHandler(async (request: Request, context: { params: P
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
-  const rate = await upsertShippingRate(id, parsed.data.governorateId, parsed.data.flatFee);
-
-  await recordAudit({
-    actorId: admin.id,
-    action: "shipping_rate.upsert",
-    targetType: "ShippingRate",
-    targetId: rate.id,
-    metadata: parsed.data,
-  });
+  const rate = await upsertShippingRate(id, admin.id, parsed.data.governorateId, parsed.data.flatFee);
 
   return NextResponse.json({ rate }, { status: 200 });
 });

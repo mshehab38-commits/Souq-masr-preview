@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { getCommissionRule, setCommissionRule } from "@/modules/shipping/service";
-import { recordAudit } from "@/lib/audit";
 import { withApiHandler } from "@/lib/api-handler";
 
 export const GET = withApiHandler(async (_request: Request, context: { params: Promise<{ id: string }> }) => {
@@ -35,15 +34,7 @@ export const PATCH = withApiHandler(async (request: Request, context: { params: 
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
-  const rule = await setCommissionRule(id, parsed.data.commissionPercent);
-
-  await recordAudit({
-    actorId: admin.id,
-    action: "shipping_commission_rule.update",
-    targetType: "ShippingCommissionRule",
-    targetId: rule.id,
-    metadata: parsed.data,
-  });
+  const rule = await setCommissionRule(id, admin.id, parsed.data.commissionPercent);
 
   return NextResponse.json({ rule });
 });

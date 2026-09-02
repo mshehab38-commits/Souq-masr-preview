@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
 import {
   createShippingCompany,
+  updateShippingCompany,
   softDeleteShippingCompany,
   type ShippingCompanyInput,
 } from "@/modules/shipping/companies";
@@ -22,6 +23,17 @@ async function makeCompany(overrides: Partial<ShippingCompanyInput> = {}) {
   });
   createdCompanyIds.push(company.id);
   return company;
+}
+
+async function makeAdmin() {
+  const user = await prisma.user.create({
+    data: {
+      phone: `+2010${Math.floor(10_000_000 + Math.random() * 89_999_999)}`,
+      role: "ADMIN",
+    },
+  });
+  createdUserIds.push(user.id);
+  return user;
 }
 
 async function makeGovernorate() {
@@ -53,6 +65,7 @@ async function makeCategory() {
 }
 
 async function cleanup() {
+  await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
   await prisma.ledgerEntry.deleteMany({
     where: { shippingSettlement: { shippingCompanyId: { in: createdCompanyIds } } },
   });
@@ -109,10 +122,11 @@ describe("resolveShippingFee", () => {
   });
 
   it("prefers a governorate-specific rate over the company default", async () => {
+    const admin = await makeAdmin();
     const company = await makeCompany();
     const governorate = await makeGovernorate();
     await setDefaultFlatFee(company.id, 50);
-    await upsertShippingRate(company.id, governorate.id, 75);
+    await upsertShippingRate(company.id, admin.id, governorate.id, 75);
 
     expect(await resolveShippingFee(company.id, governorate.id)).toBe(75);
   });
@@ -123,12 +137,13 @@ describe("resolveShippingFee", () => {
   });
 
   it("listAvailableShippingOptions only includes active companies with a resolvable fee", async () => {
+    const admin = await makeAdmin();
     const governorate = await makeGovernorate();
     const withRate = await makeCompany();
-    await upsertShippingRate(withRate.id, governorate.id, 40);
+    await upsertShippingRate(withRate.id, admin.id, governorate.id, 40);
     const withoutRate = await makeCompany();
     const inactiveWithRate = await makeCompany({ isActive: false });
-    await upsertShippingRate(inactiveWithRate.id, governorate.id, 30);
+    await upsertShippingRate(inactiveWithRate.id, admin.id, governorate.id, 30);
 
     const options = await listAvailableShippingOptions(governorate.id);
     const companyIds = options.map((o) => o.companyId);
@@ -148,8 +163,9 @@ describe("shipping commission", () => {
   });
 
   it("computes zero commission when a rule exists but is inactive", async () => {
+    const admin = await makeAdmin();
     const company = await makeCompany();
-    await setCommissionRule(company.id, 10);
+    await setCommissionRule(company.id, admin.id, 10);
     await prisma.shippingCommissionRule.update({
       where: { shippingCompanyId: company.id },
       data: { isActive: false },
@@ -158,9 +174,66 @@ describe("shipping commission", () => {
   });
 
   it("computes the correct commission amount once a percentage is set", async () => {
+    const admin = await makeAdmin();
     const company = await makeCompany();
-    await setCommissionRule(company.id, 10);
+    await setCommissionRule(company.id, admin.id, 10);
     expect(await computeShippingCommission(company.id, 200)).toBe(20);
+  });
+});
+
+describe("audit metadata for shipping mutations", () => {
+  afterEach(cleanup);
+
+  it("updateShippingCompany self-audits with prior values for only the changed keys", async () => {
+    const admin = await makeAdmin();
+    const company = await makeCompany({ isActive: true });
+
+    await updateShippingCompany(company.id, admin.id, { isActive: false });
+
+    const log = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "shipping_company.update", targetId: company.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(log.metadata).toEqual({ from: { isActive: true }, to: { isActive: false } });
+  });
+
+  it("upsertShippingRate self-audits with null from on first insert, then the prior fee on overwrite", async () => {
+    const admin = await makeAdmin();
+    const company = await makeCompany();
+    const governorate = await makeGovernorate();
+
+    const first = await upsertShippingRate(company.id, admin.id, governorate.id, 50);
+    const firstLog = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "shipping_rate.upsert", targetId: first.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(firstLog.metadata).toEqual({ from: null, to: { governorateId: governorate.id, flatFee: 50 } });
+
+    const second = await upsertShippingRate(company.id, admin.id, governorate.id, 75);
+    const secondLog = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "shipping_rate.upsert", targetId: second.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(secondLog.metadata).toEqual({ from: 50, to: { governorateId: governorate.id, flatFee: 75 } });
+  });
+
+  it("setCommissionRule self-audits with null from on first set, then the prior percentage on overwrite", async () => {
+    const admin = await makeAdmin();
+    const company = await makeCompany();
+
+    const first = await setCommissionRule(company.id, admin.id, 10);
+    const firstLog = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "shipping_commission_rule.update", targetId: first.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(firstLog.metadata).toEqual({ from: null, to: { commissionPercent: 10 } });
+
+    const second = await setCommissionRule(company.id, admin.id, 20);
+    const secondLog = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "shipping_commission_rule.update", targetId: second.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(secondLog.metadata).toEqual({ from: 10, to: { commissionPercent: 20 } });
   });
 });
 

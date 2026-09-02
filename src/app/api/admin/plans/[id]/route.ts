@@ -35,18 +35,10 @@ export const PATCH = withApiHandler(async (request: Request, context: { params: 
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
-  const result = await updatePlan(id, parsed.data);
+  const result = await updatePlan(id, admin.id, parsed.data);
   if (!result.success) {
     return NextResponse.json(result, { status: 404 });
   }
-
-  await recordAudit({
-    actorId: admin.id,
-    action: "subscription_plan.update",
-    targetType: "SubscriptionPlan",
-    targetId: id,
-    metadata: parsed.data,
-  });
 
   return NextResponse.json({ success: true });
 });
