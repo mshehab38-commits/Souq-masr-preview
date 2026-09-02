@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "@/modules/identity/service";
-import { getListingById } from "@/modules/catalog/service";
+import { getListingById, isListingFavorited } from "@/modules/catalog/service";
 import { ImageGallery } from "@/components/ui/ImageGallery";
 import { PriceTag } from "@/components/ui/PriceTag";
 import { Badge, VerifiedBadge } from "@/components/ui/Badge";
@@ -23,6 +23,7 @@ export default async function ListingDetailPage({ params }: { params: Promise<{ 
   const attributeLabels = new Map(listing.category.attributes.map((attr) => [attr.key, attr]));
   const attributeEntries = Object.entries((listing.attributes as Record<string, unknown>) ?? {});
   const isOwner = user?.id === listing.ownerId;
+  const initialFavorited = user && !isOwner ? await isListingFavorited(user.id, listing.id) : false;
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-8">
@@ -95,7 +96,12 @@ export default async function ListingDetailPage({ params }: { params: Promise<{ 
             </Link>
           )}
 
-          <ListingDetailActions listingId={listing.id} isOwner={isOwner} isSold={listing.status === "SOLD"} />
+          <ListingDetailActions
+            listingId={listing.id}
+            isOwner={isOwner}
+            isSold={listing.status === "SOLD"}
+            initialFavorited={initialFavorited}
+          />
 
           {user && !isOwner && (
             <ReportButton targetType="LISTING" listingId={listing.id} label="بلاغ عن الإعلان" />

@@ -17,6 +17,18 @@ export async function toggleFavorite(userId: string, listingId: string): Promise
   return { favorited: true };
 }
 
+// Powers the listing-detail page's favorite-button initial state — without
+// this, the button always rendered as "not favorited" on page load
+// regardless of the viewer's actual prior favorite, since nothing checked
+// it before this function existed.
+export async function isListingFavorited(userId: string, listingId: string): Promise<boolean> {
+  const existing = await prisma.favorite.findUnique({
+    where: { userId_listingId: { userId, listingId } },
+    select: { id: true },
+  });
+  return existing !== null;
+}
+
 export interface ListFavoriteListingsFilter {
   page?: number;
   limit?: number;

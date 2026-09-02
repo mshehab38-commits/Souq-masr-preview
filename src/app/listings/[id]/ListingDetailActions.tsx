@@ -9,11 +9,12 @@ interface ListingDetailActionsProps {
   listingId: string;
   isOwner: boolean;
   isSold: boolean;
+  initialFavorited: boolean;
 }
 
-export function ListingDetailActions({ listingId, isOwner, isSold }: ListingDetailActionsProps) {
+export function ListingDetailActions({ listingId, isOwner, isSold, initialFavorited }: ListingDetailActionsProps) {
   const router = useRouter();
-  const [favorited, setFavorited] = useState(false);
+  const [favorited, setFavorited] = useState(initialFavorited);
   const [busy, setBusy] = useState(false);
 
   async function handleToggleFavorite() {
