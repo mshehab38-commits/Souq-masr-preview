@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getPaymentProvider, isOnlinePaymentConfigured } from "@/modules/payments/service";
+import { getPaymentProvider, isOnlinePaymentConfigured, webhookAmountMatchesOrder } from "@/modules/payments/service";
 import { logger } from "@/lib/logger";
 import { withApiHandler } from "@/lib/api-handler";
 
@@ -24,10 +24,35 @@ export const POST = withApiHandler(async (request: Request) => {
   }
 
   if (verification.orderId && verification.status === "CAPTURED") {
-    await prisma.order.updateMany({
-      where: { id: verification.orderId, paymentStatus: "PENDING" },
-      data: { paymentStatus: "CAPTURED" },
+    // A valid HMAC only proves the payload genuinely came from Paymob — it
+    // never proves the paid amount applies to THIS order. Cross-check
+    // amount/currency against the order's own snapshotted totalAmount
+    // before ever flipping it to CAPTURED, so a mismatched payload (a
+    // future retry/idempotency bug, a manually-created Paymob order, a
+    // dashboard amount edit) is caught rather than silently trusted.
+    const order = await prisma.order.findUnique({
+      where: { id: verification.orderId },
+      select: { totalAmount: true, currency: true, paymentStatus: true },
     });
+    if (!order) {
+      logger.warn("Paymob webhook: CAPTURED for an unknown order", { orderId: verification.orderId });
+    } else {
+      const orderTotal = Number(order.totalAmount);
+      if (!webhookAmountMatchesOrder({ totalAmount: orderTotal, currency: order.currency }, verification)) {
+        logger.error("Paymob webhook: amount/currency mismatch — refusing to mark order CAPTURED", {
+          orderId: verification.orderId,
+          expectedAmountCents: Math.round(orderTotal * 100),
+          receivedAmountCents: verification.amountCents,
+          expectedCurrency: order.currency,
+          receivedCurrency: verification.currency,
+        });
+      } else {
+        await prisma.order.updateMany({
+          where: { id: verification.orderId, paymentStatus: "PENDING" },
+          data: { paymentStatus: "CAPTURED" },
+        });
+      }
+    }
   } else if (verification.orderId && verification.status === "FAILED") {
     await prisma.order.updateMany({
       where: { id: verification.orderId, paymentStatus: "PENDING" },

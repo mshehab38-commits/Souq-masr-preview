@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PaymobPaymentProvider } from "@/modules/payments/paymob-provider";
+import { webhookAmountMatchesOrder } from "@/modules/payments/webhook-amount";
 
 const HMAC_SECRET = "test-hmac-secret";
 
@@ -88,13 +89,25 @@ describe("PaymobPaymentProvider.verifyWebhook", () => {
   it("accepts a validly-signed successful payload and resolves the nested order id", () => {
     const { rawBody, hmac } = buildPayload({ success: true, merchantOrderIdLocation: "nested" });
     const result = provider.verifyWebhook(rawBody, { hmac });
-    expect(result).toEqual({ valid: true, orderId: "order-abc-123", status: "CAPTURED" });
+    expect(result).toEqual({
+      valid: true,
+      orderId: "order-abc-123",
+      status: "CAPTURED",
+      amountCents: 50000,
+      currency: "EGP",
+    });
   });
 
   it("falls back to a top-level merchant_order_id when it isn't nested under obj.order", () => {
     const { rawBody, hmac } = buildPayload({ success: true, merchantOrderIdLocation: "top-level" });
     const result = provider.verifyWebhook(rawBody, { hmac });
-    expect(result).toEqual({ valid: true, orderId: "order-abc-123", status: "CAPTURED" });
+    expect(result).toEqual({
+      valid: true,
+      orderId: "order-abc-123",
+      status: "CAPTURED",
+      amountCents: 50000,
+      currency: "EGP",
+    });
   });
 
   it("resolves status FAILED for an unsuccessful transaction", () => {
@@ -132,5 +145,41 @@ describe("PaymobPaymentProvider.verifyWebhook", () => {
     const result = provider.verifyWebhook(rawBody, { hmac });
     expect(result.valid).toBe(true);
     expect(result.orderId).toBeUndefined();
+  });
+});
+
+describe("webhookAmountMatchesOrder", () => {
+  it("matches when the amount (converted to cents) and currency both agree", () => {
+    expect(
+      webhookAmountMatchesOrder({ totalAmount: 500, currency: "EGP" }, { amountCents: 50000, currency: "EGP" }),
+    ).toBe(true);
+  });
+
+  it("rejects a lower paid amount than the order actually owes", () => {
+    expect(
+      webhookAmountMatchesOrder({ totalAmount: 500, currency: "EGP" }, { amountCents: 40000, currency: "EGP" }),
+    ).toBe(false);
+  });
+
+  it("rejects a higher paid amount than the order actually owes", () => {
+    expect(
+      webhookAmountMatchesOrder({ totalAmount: 500, currency: "EGP" }, { amountCents: 60000, currency: "EGP" }),
+    ).toBe(false);
+  });
+
+  it("rejects a currency mismatch even when the amount matches", () => {
+    expect(
+      webhookAmountMatchesOrder({ totalAmount: 500, currency: "EGP" }, { amountCents: 50000, currency: "USD" }),
+    ).toBe(false);
+  });
+
+  it("rejects when the webhook carries no amount/currency at all", () => {
+    expect(webhookAmountMatchesOrder({ totalAmount: 500, currency: "EGP" }, {})).toBe(false);
+  });
+
+  it("handles fractional piastres correctly via rounding", () => {
+    expect(
+      webhookAmountMatchesOrder({ totalAmount: 199.99, currency: "EGP" }, { amountCents: 19999, currency: "EGP" }),
+    ).toBe(true);
   });
 });

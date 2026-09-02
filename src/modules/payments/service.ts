@@ -4,6 +4,7 @@ import { PaymobPaymentProvider } from "./paymob-provider";
 import type { PaymentProvider } from "./types";
 
 export type { PaymentProvider, PaymentOrderInfo, CreatePaymentResult, WebhookVerificationResult } from "./types";
+export { webhookAmountMatchesOrder } from "./webhook-amount";
 
 let codProvider: CodPaymentProvider | null = null;
 let paymobProvider: PaymobPaymentProvider | null = null;

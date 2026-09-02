@@ -176,6 +176,8 @@ export class PaymobPaymentProvider implements PaymentProvider {
       valid: true,
       orderId,
       status: obj.success ? "CAPTURED" : "FAILED",
+      amountCents: typeof obj.amount_cents === "number" ? obj.amount_cents : Number(obj.amount_cents),
+      currency: typeof obj.currency === "string" ? obj.currency : undefined,
     };
   }
 }

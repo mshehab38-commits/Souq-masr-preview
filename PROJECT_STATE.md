@@ -7,11 +7,11 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-09-01 (Phase 25 completion)
+Last updated: 2026-09-01 (Phase 26 completion)
 
 ## Current Status
 
-**Phases 20 through 25 are all COMPLETE, validated, committed, and
+**Phases 20 through 26 are all COMPLETE, validated, committed, and
 pushed**: Phase 20 (twelve composite database indexes), Phase 21 (a
 shared rate-limit utility wired into the three most abuse-prone write
 endpoints, plus a root-cause verification-request pending-dedupe fix),
@@ -27,10 +27,17 @@ Listing they mutate, closing a real gap where the report-driven
 moderation path left no Listing-keyed trail in `AuditLog`), Phase 24
 (a further audit round — CSRF coverage across all 40 mutating routes
 and frontend authorization-assumption leaks both came back fully clean,
-the second consecutive clean round this session), and Phase 25 (closed
+the second consecutive clean round this session), Phase 25 (closed
 Phase 24's one cosmetic finding: `getUserDetail()` now uses an explicit
 Prisma `select`, no longer over-fetching low-sensitivity fields into
-the admin API response).
+the admin API response), and Phase 26 (completed the financial/
+business-logic integrity audit that an earlier session interrupted
+before it delivered results — five of seven checks came back clean;
+the Paymob webhook now independently cross-checks the paid amount/
+currency against the target order's own snapshotted total before ever
+marking it `CAPTURED`, closing a real defense-in-depth gap where a
+valid HMAC signature alone was trusted as proof the amount applied to
+the right order).
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -90,7 +97,8 @@ tasks to be framed across disciplines).
 | 22 | Timing-safe Paymob webhook HMAC, `processListingImage` sweep-race guard, `createNotification` DB-write failure isolation | `c8543b4` | Done |
 | 23 | Report-driven listing removal/flag now self-audits against the Listing (`admin.listing.remove`/`admin.listing.flag_for_review`); `setUserStatus` audit records `{from, to}` | `4505c51` | Done |
 | 24 | Fresh audit round: CSRF coverage (all 40 mutating routes) and frontend authorization-assumption leaks — both fully clean, no code change | ef1f166 | Done (audit only) |
-| 25 | `getUserDetail()` scoped to an explicit Prisma `select` — closes the Phase 24 data-minimization nit | this session | **Done** |
+| 25 | `getUserDetail()` scoped to an explicit Prisma `select` — closes the Phase 24 data-minimization nit | 1a39277 | Done |
+| 26 | Completed financial-integrity audit; fixed a real gap — Paymob webhook now cross-checks amount/currency against the order before capturing | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -977,6 +985,27 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
+## Tests & Results (Phase 26, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (225 modules, 799 dependencies —
+  one new file, `src/modules/payments/webhook-amount.ts`).
+- `npm test` — **364/364 unit tests passing** across 46 files. New this
+  phase: 6 tests for `webhookAmountMatchesOrder`
+  (`tests/payments/paymob-webhook.test.ts`) covering exact match,
+  amount too low, amount too high, currency mismatch, missing
+  amount/currency, and fractional-piastre rounding; the 2 existing
+  `verifyWebhook` exact-equality tests updated to include the new
+  `amountCents`/`currency` fields. (One unrelated test —
+  `createReport`'s rate-limit loop — timed out on a cold-started
+  Postgres/Redis mid-suite-restart; re-ran clean in isolation and in
+  the full suite afterward, confirming it was restart-timing, not a
+  regression.)
+- `npx playwright test` — **8/8 e2e specs passing**, all unmodified.
+- `npm run build` — clean, warning-free production build; no new
+  routes (webhook route's behavior changed, its path/shape didn't).
+
 ## Tests & Results (Phase 25, all green)
 
 - `npm run typecheck` — clean.
@@ -1320,7 +1349,18 @@ runtime bug. Fixed by moving the fallback rate onto
   training knowledge, but has never actually been exercised, since no
   real credentials exist. Verify the exact request/response shape and
   the webhook HMAC field order against Paymob's current sandbox before
-  relying on it in production.
+  relying on it in production. The webhook now also independently
+  verifies paid amount/currency against the order (Phase 26) — re-verify
+  that `amount_cents`/`currency` are the correct payload field names/
+  units against the real sandbox at the same time.
+- ~~No refund/return financial-reversal logic~~ — **confirmed NOT
+  IMPLEMENTED, not a bug, in Phase 26's audit**:
+  `RETURNED`/`REFUNDED`/`DISPUTED` exist as wired state-machine
+  transitions with zero ledger/listing-reactivation/Paymob-refund logic
+  behind them, matching `docs/BUSINESS_MODEL.md` §8's explicit
+  "not built — currently free for both parties" (see D7/D8 below —
+  this is an open owner decision, not a technical gap to close
+  unilaterally).
 - **New listings still publish straight to `ACTIVE` by default; there is
   no *mandatory* pre-publish review gate turned on** — Phase 10 gave
   moderators a reversible `PENDING_REVIEW` escalation (`FLAG_FOR_REVIEW`,
@@ -1864,6 +1904,46 @@ changed. Data-minimization hygiene only — not a fix for an actual
 authorization gap, since the endpoint was already correctly restricted
 to moderators/admins who are entitled to see this user's data.
 
+## What Was Completed in Phase 26
+
+Per the owner's "continue the work fully" instruction, completed the
+financial/business-logic integrity audit that an earlier session in
+this run had started but never finished (the background agent was
+interrupted mid-task with no result ever delivered). Re-ran it to
+completion across 7 checks:
+
+- **Clean**: order state machine (exhaustive, correctly guarded
+  transitions; money snapshotted once at checkout, never re-read live;
+  the Phase 15 double-sell fix confirmed still correctly in place),
+  ledger (every entry explicitly tagged `account`, revenue aggregation
+  correctly filtered to `PLATFORM_REVENUE` only), subscriptions (no
+  auto-charge/cron logic anywhere — purely admin-driven grant/revoke,
+  pricing always DB-read), shipping commission (computes only the
+  percentage of the fee, never the fee itself; the Phase 5
+  nullable-governorate fix confirmed still correctly in place), and
+  hardcoded financial values (none found anywhere in application code
+  — every price/percentage/commission/fee traced to an owner-configured
+  DB field).
+- **Real gap found and fixed**: the Paymob webhook never cross-checked
+  the paid `amount_cents`/`currency` against the target order's own
+  `totalAmount`/`currency` before marking it `CAPTURED` — a valid HMAC
+  signature only proves the payload is authentically from Paymob, never
+  that the amount applies to that specific order. Fixed by extending
+  `WebhookVerificationResult` with `amountCents`/`currency`, adding a
+  new pure, unit-tested `webhookAmountMatchesOrder()` function
+  (`src/modules/payments/webhook-amount.ts`), and having the route
+  refuse (log + leave `PENDING`) rather than capture on any mismatch.
+  Zero production behavior change today — the whole route already
+  returns `503` until real Paymob credentials exist — but the gap is
+  now closed before online payments ever go live, not after.
+- **Confirmed NOT IMPLEMENTED, not a bug**: refund/return handling.
+  `RETURNED`/`REFUNDED`/`DISPUTED` exist as wired state-machine
+  transitions with zero financial reversal logic behind them, matching
+  `docs/BUSINESS_MODEL.md` §8's explicit "not built — currently free
+  for both parties." Not built this phase — it's a larger, separate
+  unit of work with its own open owner-facing questions (a
+  cancellation/refund fee policy) already flagged in that document.
+
 ## Technical/Architecture Decisions (Phase 23)
 
 See `docs/DECISIONS.md` for full rationale. Summary:
@@ -1884,6 +1964,33 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   BANNED` directly from `AuditLog`.
 - Session/cookie security and N+1 query patterns were both independently
   audited and confirmed already correct — no changes needed there.
+
+## Technical/Architecture Decisions (Phase 26)
+
+See `docs/DECISIONS.md` for full rationale. Summary:
+
+- `WebhookVerificationResult` now carries `amountCents`/`currency` from
+  the (HMAC-verified) payload, so a caller can independently cross-check
+  them — a signature alone proves authenticity, never applicability to
+  a specific order.
+- The comparison itself lives in a new, small, pure, unit-tested
+  function (`webhookAmountMatchesOrder`) rather than inline in the
+  route, matching this codebase's established "business logic in the
+  module, not the route handler" convention. Compares in cents (the
+  gateway's native unit) rather than converting cents to a float, to
+  avoid floating-point comparison entirely.
+- On a mismatch, the route logs an error and leaves the order `PENDING`
+  rather than either capturing it or marking it `FAILED` — the order's
+  true payment state is genuinely unknown in that scenario, and forcing
+  it to either terminal state would be a guess; `PENDING` is the
+  already-accurate "not yet confirmed" state and requires no new enum
+  value or admin-facing "investigate" queue to be built for this phase.
+- Order-state-machine, ledger, subscriptions, and shipping-commission
+  logic were all independently re-audited and confirmed already
+  correct — no changes needed there. Refund/return handling was
+  confirmed genuinely unbuilt (not a bug) and intentionally left
+  alone — it's a larger, separate unit of work gated on an open owner
+  decision (D7/D8 below).
 
 ## OWNER DECISION REQUIRED — Resolved
 
@@ -1970,46 +2077,50 @@ None.
 
 ## Exact Next Action
 
-Phases 20 through 25 are all committed and pushed (both branches kept
+Phases 20 through 26 are all committed and pushed (both branches kept
 in sync — see Git Safety in `CLAUDE.md` and this session's owner
 authorization to merge into `main`). Phase 25 closed Phase 24's one
-remaining cosmetic finding (`getUserDetail()`'s over-fetch); nothing
-new was audited in Phase 25 itself. This session ran ten fresh audits
-total, per the owner's explicit continuation directive to keep
-re-auditing and implementing every owner-independent technical gap
-found rather than stopping at the first "nothing left" conclusion:
-IDOR/authorization, rate limiting, DB indexes, background-job
-idempotency, Paymob webhook duplicate-processing,
+remaining cosmetic finding (`getUserDetail()`'s over-fetch). Phase 26
+completed the financial/business-logic integrity audit an earlier
+session had started but never finished, finding and fixing one real
+gap (the Paymob webhook's amount/currency cross-check). This session
+ran eleven fresh audits total, per the owner's explicit continuation
+directive to keep re-auditing and implementing every owner-independent
+technical gap found rather than stopping at the first "nothing left"
+conclusion: IDOR/authorization, rate limiting, DB indexes,
+background-job idempotency, Paymob webhook duplicate-processing,
 notification-delivery reliability, session/cookie security, N+1 query
-patterns, admin-audit-log completeness, CSRF coverage completeness, and
-frontend authorization-assumption leaks. Seven came back clean
-(IDOR/authorization; background-job idempotency; Paymob webhook
-duplicate-processing; session/cookie security; N+1 query patterns; CSRF
-coverage; frontend authorization leaks — all confirmed by reading the
-actual code, the last two exhaustively rather than spot-checked). The
-other three each found real, genuine gaps, all now fixed and closed
-(Phase 20: DB indexes; Phase 21: rate limiting + verification-request
-dedupe; Phase 22: Paymob HMAC timing safety, an image-processing
-sweep-race guard, and notification DB-write isolation; Phase 23:
-Listing-keyed audit trail for report-driven removal/flagging, plus
-`setUserStatus`'s `{from, to}` metadata).
+patterns, admin-audit-log completeness, CSRF coverage completeness,
+frontend authorization-assumption leaks, and financial/business-logic
+integrity. Seven came back fully clean (IDOR/authorization;
+background-job idempotency; Paymob webhook duplicate-processing;
+session/cookie security; N+1 query patterns; CSRF coverage; frontend
+authorization leaks). The financial-integrity audit (Phase 26) was
+five-sevenths clean (order state machine, ledger, subscriptions,
+shipping commission, hardcoded-value scan) with one real gap found and
+fixed, plus one confirmed-not-a-bug finding (refund/return handling is
+genuinely unbuilt, an open owner decision, not a technical gap). The
+other three purely-technical audits each found real, genuine gaps, all
+now fixed and closed (Phase 20: DB indexes; Phase 21: rate limiting +
+verification-request dedupe; Phase 22: Paymob HMAC timing safety, an
+image-processing sweep-race guard, and notification DB-write
+isolation; Phase 23: Listing-keyed audit trail for report-driven
+removal/flagging, plus `setUserStatus`'s `{from, to}` metadata).
 
-**Phase 24's round was the second in a row to come back fully clean**
-(the first being background-job idempotency + Paymob webhook
-duplicate-processing, both part of Phase 22's audit set) — a
-meaningfully different signal than Phases 15-23, where nearly every
-fresh angle found something real. This is not proof nothing remains
-(the project's own history says a "nothing left" conclusion has been
-wrong before), but the highest-value, most obviously-exploitable
-technical gaps identified by security-shaped audits (auth, IDOR,
-CSRF, session/cookie handling, rate limiting, race conditions,
-audit-trail completeness, N+1 performance, frontend data leaks) appear
-to be closed as of this session. A future session should treat this as
-a genuine inflection point: still run a fresh audit at the start (per
-CLAUDE.md Section 1), but consider whether the next unit of work is a
-**product feature** (the Deferred items below are almost all owner-gated
-or scope-larger-than-a-single-pass, not "undiscovered security bugs")
-rather than another security-shaped audit angle.
+**Phases 24 and 26 both being mostly/fully clean is the strongest
+signal yet** that the highest-value, most obviously-exploitable
+technical gaps identified by security- and integrity-shaped audits
+(auth, IDOR, CSRF, session/cookie handling, rate limiting, race
+conditions, audit-trail completeness, N+1 performance, frontend data
+leaks, and now core financial logic) are largely closed as of this
+session. This is not proof nothing remains (the project's own history
+says a "nothing left" conclusion has been wrong before), but a future
+session should treat this as a genuine inflection point: still run a
+fresh audit at the start (per CLAUDE.md Section 1), but seriously
+weigh whether the next unit of work is a **product feature** (the
+Deferred items below are almost all owner-gated or scope-larger-than-
+a-single-pass, not "undiscovered security/integrity bugs") rather than
+another audit angle.
 
 Remaining candidates for a future purely-technical audit round, not yet
 exhaustively checked: the thin-metadata audit-log gaps this session
