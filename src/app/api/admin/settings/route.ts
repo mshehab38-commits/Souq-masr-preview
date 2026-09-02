@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin, assertCsrf } from "@/modules/identity/service";
 import { getPlatformSettings, updatePlatformSettings } from "@/modules/settings/service";
-import { recordAudit } from "@/lib/audit";
 import { withApiHandler } from "@/lib/api-handler";
 
 export const GET = withApiHandler(async () => {
@@ -36,13 +35,6 @@ export const PATCH = withApiHandler(async (request: Request) => {
   }
 
   const settings = await updatePlatformSettings(admin.id, parsed.data);
-
-  await recordAudit({
-    actorId: admin.id,
-    action: "settings.update",
-    targetType: "PlatformSettings",
-    metadata: parsed.data,
-  });
 
   return NextResponse.json({ settings });
 });

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { recordAudit } from "@/lib/audit";
 
 // Null = OWNER CONFIGURATION REQUIRED — the platform earns 0% on this
 // company's shipments until a real contracted percentage is set. Never an
@@ -7,12 +8,31 @@ export async function getCommissionRule(shippingCompanyId: string) {
   return prisma.shippingCommissionRule.findUnique({ where: { shippingCompanyId } });
 }
 
-export async function setCommissionRule(shippingCompanyId: string, commissionPercent: number | null) {
-  return prisma.shippingCommissionRule.upsert({
+// Self-audits with the prior commissionPercent (null if this is the
+// first rule for this company) — see settings.ts's
+// updatePlatformSettings for the same pattern and docs/DECISIONS.md for
+// why.
+export async function setCommissionRule(shippingCompanyId: string, actorId: string, commissionPercent: number | null) {
+  const before = await getCommissionRule(shippingCompanyId);
+
+  const rule = await prisma.shippingCommissionRule.upsert({
     where: { shippingCompanyId },
     update: { commissionPercent },
     create: { shippingCompanyId, commissionPercent },
   });
+
+  await recordAudit({
+    actorId,
+    action: "shipping_commission_rule.update",
+    targetType: "ShippingCommissionRule",
+    targetId: rule.id,
+    metadata: {
+      from: before ? (before.commissionPercent === null ? null : Number(before.commissionPercent)) : null,
+      to: { commissionPercent },
+    },
+  });
+
+  return rule;
 }
 
 // Platform revenue owed BY the shipping company on a given shipping fee —

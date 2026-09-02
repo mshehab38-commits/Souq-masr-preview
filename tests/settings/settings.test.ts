@@ -28,6 +28,7 @@ describe("settings module", () => {
         updatedBy: null,
       },
     });
+    await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
     await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
     createdUserIds.length = 0;
   });
@@ -80,5 +81,19 @@ describe("settings module", () => {
     const updated = await updatePlatformSettings(admin.id, { paymentProcessingFeeBearer: "SELLER" });
     expect(updated.paymentProcessingFeeBearer).toBe("SELLER");
     expect(updated.freeListingActiveLimit).toBe(10);
+  });
+
+  it("self-audits with the prior value, so a second change's metadata.from matches the first change's to", async () => {
+    const admin = await makeAdmin();
+    await updatePlatformSettings(admin.id, { freeListingActiveLimit: 10 });
+    await updatePlatformSettings(admin.id, { freeListingActiveLimit: 20 });
+
+    const logs = await prisma.auditLog.findMany({
+      where: { action: "settings.update", actorId: admin.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(logs).toHaveLength(2);
+    expect(logs[0]?.metadata).toEqual({ from: { freeListingActiveLimit: null }, to: { freeListingActiveLimit: 10 } });
+    expect(logs[1]?.metadata).toEqual({ from: { freeListingActiveLimit: 10 }, to: { freeListingActiveLimit: 20 } });
   });
 });

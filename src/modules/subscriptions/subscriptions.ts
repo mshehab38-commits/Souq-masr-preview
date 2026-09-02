@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import type { BillingCycle } from "@prisma/client";
 import { getPlatformSettings } from "@/modules/settings/service";
 import { recordLedgerEntry } from "@/modules/ledger/service";
+import { recordAudit } from "@/lib/audit";
 
 function addBillingPeriod(start: Date, cycle: BillingCycle): Date {
   const end = new Date(start);
@@ -62,12 +63,30 @@ export async function grantSubscription(
   return { success: true, subscriptionId: subscription.id };
 }
 
-export async function revokeSubscription(subscriptionId: string): Promise<boolean> {
+// Self-audits with the subscription's userId/planId — this action
+// previously recorded zero metadata at all, not just thin metadata (see
+// docs/DECISIONS.md).
+export async function revokeSubscription(subscriptionId: string, actorId: string): Promise<boolean> {
+  const subscription = await prisma.subscription.findFirst({
+    where: { id: subscriptionId, status: "ACTIVE" },
+  });
+  if (!subscription) return false;
+
   const result = await prisma.subscription.updateMany({
     where: { id: subscriptionId, status: "ACTIVE" },
     data: { status: "CANCELLED", cancelledAt: new Date() },
   });
-  return result.count > 0;
+  if (result.count === 0) return false;
+
+  await recordAudit({
+    actorId,
+    action: "subscription.revoke",
+    targetType: "Subscription",
+    targetId: subscriptionId,
+    metadata: { userId: subscription.userId, planId: subscription.planId },
+  });
+
+  return true;
 }
 
 export async function getActiveSubscription(userId: string) {

@@ -38,6 +38,7 @@ async function makePlan(overrides: Partial<Parameters<typeof createPlan>[0]> = {
 
 describe("subscription plans", () => {
   afterEach(async () => {
+    await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
     await prisma.ledgerEntry.deleteMany({ where: { subscription: { userId: { in: createdUserIds } } } });
     await prisma.subscription.deleteMany({ where: { userId: { in: createdUserIds } } });
     await prisma.subscriptionPlan.deleteMany({ where: { id: { in: createdPlanIds } } });
@@ -66,8 +67,9 @@ describe("subscription plans", () => {
   });
 
   it("updates a plan's price and limit", async () => {
+    const admin = await makeUser();
     const plan = await makePlan();
-    const result = await updatePlan(plan.id, { monthlyPrice: 100, activeListingLimit: 20 });
+    const result = await updatePlan(plan.id, admin.id, { monthlyPrice: 100, activeListingLimit: 20 });
     expect(result).toEqual({ success: true });
 
     const updated = await prisma.subscriptionPlan.findUniqueOrThrow({ where: { id: plan.id } });
@@ -76,8 +78,22 @@ describe("subscription plans", () => {
   });
 
   it("reports not_found when updating a plan that doesn't exist", async () => {
-    const result = await updatePlan("does-not-exist", { monthlyPrice: 50 });
+    const admin = await makeUser();
+    const result = await updatePlan("does-not-exist", admin.id, { monthlyPrice: 50 });
     expect(result).toEqual({ success: false, error: "not_found" });
+  });
+
+  it("self-audits with the prior values for only the changed keys", async () => {
+    const admin = await makeUser();
+    const plan = await makePlan({ monthlyPrice: 100 });
+
+    await updatePlan(plan.id, admin.id, { monthlyPrice: 150 });
+
+    const log = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "subscription_plan.update", targetId: plan.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(log.metadata).toEqual({ from: { monthlyPrice: 100 }, to: { monthlyPrice: 150 } });
   });
 
   it("soft-deletes a plan and deactivates it", async () => {
@@ -93,6 +109,7 @@ describe("subscription plans", () => {
 
 describe("grantSubscription", () => {
   afterEach(async () => {
+    await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
     await prisma.ledgerEntry.deleteMany({ where: { subscription: { userId: { in: createdUserIds } } } });
     await prisma.subscription.deleteMany({ where: { userId: { in: createdUserIds } } });
     await prisma.subscriptionPlan.deleteMany({ where: { id: { in: createdPlanIds } } });
@@ -188,7 +205,7 @@ describe("grantSubscription", () => {
     expect(granted.success).toBe(true);
     if (!granted.success) return;
 
-    const revoked = await revokeSubscription(granted.subscriptionId);
+    const revoked = await revokeSubscription(granted.subscriptionId, admin.id);
     expect(revoked).toBe(true);
 
     const subscription = await prisma.subscription.findUniqueOrThrow({
@@ -196,6 +213,51 @@ describe("grantSubscription", () => {
     });
     expect(subscription.status).toBe("CANCELLED");
     expect(subscription.cancelledAt).not.toBeNull();
+  });
+
+  it("self-audits a revoke with the subscription's userId/planId — previously recorded no metadata at all", async () => {
+    const admin = await makeUser();
+    const user = await makeUser();
+    const plan = await makePlan({ monthlyPrice: 100 });
+
+    const granted = await grantSubscription(admin.id, {
+      userId: user.id,
+      planId: plan.id,
+      billingCycle: "MONTHLY",
+    });
+    expect(granted.success).toBe(true);
+    if (!granted.success) return;
+
+    await revokeSubscription(granted.subscriptionId, admin.id);
+
+    const log = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "subscription.revoke", targetId: granted.subscriptionId },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(log.metadata).toEqual({ userId: user.id, planId: plan.id });
+  });
+
+  it("returns false and records no audit entry when revoking an already-inactive subscription", async () => {
+    const admin = await makeUser();
+    const user = await makeUser();
+    const plan = await makePlan({ monthlyPrice: 100 });
+
+    const granted = await grantSubscription(admin.id, {
+      userId: user.id,
+      planId: plan.id,
+      billingCycle: "MONTHLY",
+    });
+    expect(granted.success).toBe(true);
+    if (!granted.success) return;
+
+    await revokeSubscription(granted.subscriptionId, admin.id);
+    const secondAttempt = await revokeSubscription(granted.subscriptionId, admin.id);
+    expect(secondAttempt).toBe(false);
+
+    const logCount = await prisma.auditLog.count({
+      where: { action: "subscription.revoke", targetId: granted.subscriptionId },
+    });
+    expect(logCount).toBe(1);
   });
 
   it("getActiveSubscription returns null once a subscription is revoked", async () => {
@@ -212,13 +274,14 @@ describe("grantSubscription", () => {
     if (!granted.success) return;
 
     expect(await getActiveSubscription(user.id)).not.toBeNull();
-    await revokeSubscription(granted.subscriptionId);
+    await revokeSubscription(granted.subscriptionId, admin.id);
     expect(await getActiveSubscription(user.id)).toBeNull();
   });
 });
 
 describe("resolveActiveListingLimit", () => {
   afterEach(async () => {
+    await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
     await prisma.ledgerEntry.deleteMany({ where: { subscription: { userId: { in: createdUserIds } } } });
     await prisma.subscription.deleteMany({ where: { userId: { in: createdUserIds } } });
     await prisma.subscriptionPlan.deleteMany({ where: { id: { in: createdPlanIds } } });
