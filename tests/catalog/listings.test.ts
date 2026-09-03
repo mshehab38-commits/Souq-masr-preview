@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
 import {
   createListing,
+  updateListing,
   listListingsByOwner,
   listPendingReviewListings,
   decidePendingListing,
@@ -11,6 +12,7 @@ import { updatePlatformSettings } from "@/modules/settings/settings";
 
 const createdUserIds: string[] = [];
 const createdCategoryIds: string[] = [];
+const createdGovernorateIds: string[] = [];
 
 async function makeUser(overrides: Record<string, unknown> = {}) {
   const user = await prisma.user.create({
@@ -225,5 +227,124 @@ describe("listListingsByOwner", () => {
 
     const result = await listListingsByOwner(owner.id, { limit: 10_000 });
     expect(result.items).toHaveLength(1);
+  });
+});
+
+describe("updateListing", () => {
+  afterEach(async () => {
+    await prisma.listing.deleteMany({ where: { ownerId: { in: createdUserIds } } });
+    await prisma.category.deleteMany({ where: { id: { in: createdCategoryIds } } });
+    await prisma.governorate.deleteMany({ where: { id: { in: createdGovernorateIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    createdUserIds.length = 0;
+    createdCategoryIds.length = 0;
+    createdGovernorateIds.length = 0;
+  });
+
+  async function makeGovernorate() {
+    const governorate = await prisma.governorate.create({
+      data: {
+        slug: `edit-listing-gov-${Math.random().toString(36).slice(2)}`,
+        nameAr: "محافظة اختبارية",
+        nameEn: "Test Governorate",
+      },
+    });
+    createdGovernorateIds.push(governorate.id);
+    return governorate;
+  }
+
+  it("updates title/description/price/negotiable/governorateId for the owner", async () => {
+    const owner = await makeUser();
+    const category = await makeCategory();
+    const governorate = await makeGovernorate();
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "قديم", status: "ACTIVE" },
+    });
+
+    const result = await updateListing(listing.id, owner.id, {
+      title: "عنوان جديد",
+      description: "وصف جديد",
+      price: 500,
+      negotiable: true,
+      governorateId: governorate.id,
+    });
+    expect(result).toEqual({ success: true });
+
+    const updated = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+    expect(updated.title).toBe("عنوان جديد");
+    expect(updated.description).toBe("وصف جديد");
+    expect(Number(updated.price)).toBe(500);
+    expect(updated.negotiable).toBe(true);
+    expect(updated.governorateId).toBe(governorate.id);
+  });
+
+  it("returns forbidden when the caller is not the owner", async () => {
+    const owner = await makeUser();
+    const other = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "إعلان", status: "ACTIVE" },
+    });
+
+    const result = await updateListing(listing.id, other.id, { title: "محاولة تعديل" });
+    expect(result).toEqual({ success: false, error: "forbidden" });
+  });
+
+  it("returns not_found for a missing or soft-deleted listing", async () => {
+    const owner = await makeUser();
+
+    const missing = await updateListing("does-not-exist", owner.id, { title: "x" });
+    expect(missing).toEqual({ success: false, error: "not_found" });
+
+    const category = await makeCategory();
+    const deleted = await prisma.listing.create({
+      data: {
+        ownerId: owner.id,
+        categoryId: category.id,
+        title: "محذوف",
+        status: "REMOVED",
+        deletedAt: new Date(),
+      },
+    });
+    const result = await updateListing(deleted.id, owner.id, { title: "محاولة" });
+    expect(result).toEqual({ success: false, error: "not_found" });
+  });
+
+  it("rejects invalid attribute values against the listing's category", async () => {
+    const owner = await makeUser();
+    const category = await prisma.category.create({
+      data: {
+        slug: `edit-listing-attr-${Math.random().toString(36).slice(2)}`,
+        nameAr: "قسم",
+        nameEn: "Category",
+        attributes: {
+          create: [{ key: "brand", labelAr: "الماركة", labelEn: "Brand", type: "TEXT", required: true, sortOrder: 0 }],
+        },
+      },
+    });
+    createdCategoryIds.push(category.id);
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "إعلان", status: "ACTIVE", attributes: { brand: "Samsung" } },
+    });
+
+    const result = await updateListing(listing.id, owner.id, { attributes: { brand: "" } });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("invalid_attributes");
+  });
+
+  it("allows updating a listing regardless of its status (e.g. SOLD), matching its no-status-restriction design", async () => {
+    const owner = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "مباع", status: "SOLD" },
+    });
+
+    const result = await updateListing(listing.id, owner.id, { title: "مباع - تعديل" });
+    expect(result).toEqual({ success: true });
+
+    const updated = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+    expect(updated.title).toBe("مباع - تعديل");
+    expect(updated.status).toBe("SOLD");
   });
 });

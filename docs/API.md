@@ -112,7 +112,9 @@ on non-owner views.
 ### `PATCH /api/listings/[id]`
 
 Requires session + CSRF + ownership. Same body shape/validation as
-`POST`. Re-enqueues search indexing.
+`POST`. Re-enqueues search indexing. No restriction on the listing's
+current status (works on `ACTIVE`, `SOLD`, etc. — matches `DELETE`
+below). UI consumer: `/listings/[id]/edit` (Phase 32).
 
 ### `DELETE /api/listings/[id]`
 

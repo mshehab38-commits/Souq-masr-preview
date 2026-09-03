@@ -184,7 +184,8 @@ tasks to be framed across disciplines).
 | 28 | Closed the thin-metadata audit-log gap flagged (not fixed) in Phases 23/24/26: six settings/shipping/subscription admin functions now self-audit with `{from, to}` instead of only the submitted value | 25894a1 | Done |
 | 29 | Fresh OODA review (not another rote audit) found and closed a real gap: zero direct unit-test coverage on the session/CSRF/RBAC core (`session.ts`/`rbac.ts`) — including the Phase 6 banned/suspended-session-invalidation claim, which had no regression test behind it | 40a0778 | Done |
 | 30 | Built the `/search` price-range filter UI (Phase 29's recommended next action) — backend (`SearchFilters`, `resolveSearchFilters`, `PostgresSearchProvider`, `GET /api/search`, saved-search matching) already fully supported it; only the page's form was missing it | aca275e | Done |
-| 31 | Built the `/admin/audit-log` viewer — `AuditLog` was completely write-only until now; new `listAuditLogs()` (`src/lib/audit.ts`), `GET /api/admin/audit-log`, and an admin page with action/targetType filters + pagination | this session | **Done** |
+| 31 | Built the `/admin/audit-log` viewer — `AuditLog` was completely write-only until now; new `listAuditLogs()` (`src/lib/audit.ts`), `GET /api/admin/audit-log`, and an admin page with action/targetType filters + pagination | 56fca86 | Done |
+| 32 | Owner clarified a "user deletion" question was really about listing management. Verified delete already fully works; built the missing `/listings/[id]/edit` page — `updateListing`/`PATCH /api/listings/[id]` were fully built and tested-adjacent but had zero UI consumer | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1072,6 +1073,44 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
+## What Was Completed in Phase 32
+
+The owner's request ("المستخدم يقدر يحذف اعلانات من حسابه سواء قديمه او
+جديده مطلوب تعديلها") was, after a clarifying exchange, about listing
+management rather than the still-open user-account-deletion question
+from Phase 29. Verified both capabilities directly against the code
+before touching anything:
+
+- **Deleting a listing already worked completely, with no restriction**
+  — `softDeleteListing`/`bulkUpdateListings`'s `"delete"` branch filter
+  only on ownership + `deletedAt: null`, with two already-working UI
+  entry points (`ListingDetailActions`'s "حذف الإعلان",
+  `MyListingsClient`'s bulk "حذف"). **No change needed here.**
+- **Editing a listing had zero UI anywhere**, despite
+  `updateListing(listingId, ownerId, input)`/`PATCH
+  /api/listings/[id]` being fully built and already re-triggering
+  search re-indexing — the same "backend built, no UI consumer" shape
+  as Phases 27/30/31. This is what got built:
+  - New `/listings/[id]/edit` page (Server Component; ownership +
+    not-deleted check, redirects a non-owner to `/listings/{id}`) and
+    `EditListingForm.tsx` (trimmed `NewListingForm.tsx`, pre-filled
+    from the listing's current values). Field set matches the existing
+    `PATCH` route's schema exactly — no category/commerce/fulfillment
+    fields, matching that route's own deliberate scope.
+  - No listing-status restriction on editing (matches `updateListing`'s
+    pre-existing design) — a `SOLD` listing can be edited too, per the
+    owner's explicit "old or new" requirement.
+  - New "تعديل الإعلان" link on `ListingDetailActions.tsx`, visible to
+    the owner alongside the existing mark-sold/delete actions.
+  - Closed a real, pre-existing zero-coverage gap: `updateListing` had
+    no direct unit tests before this phase (confirmed via grep) despite
+    already being shipped. Added a full `describe("updateListing", ...)`
+    block to `tests/catalog/listings.test.ts`.
+- The still-open user-account-deletion question (self-service and/or
+  admin-driven, retention/legal conditions) remains **OWNER DECISION
+  REQUIRED** and out of scope here — this phase only addressed listing
+  management.
+
 ## What Was Completed in Phase 31
 
 Built the admin UI to view `AuditLog` entries — the last actionable
@@ -1224,6 +1263,28 @@ already sufficient). See `docs/DECISIONS.md`'s Phase 28 entry for full
 rationale. No financial/business decision involved — pure audit-trail
 completeness, no behavior change visible to any admin beyond richer
 `AuditLog` rows.
+
+## Tests & Results (Phase 32, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (232 modules, 839 dependencies).
+- `npm test` — **411/411 unit tests passing** across 49 files. New this
+  phase: a `describe("updateListing", ...)` block in
+  `tests/catalog/listings.test.ts` (5 tests) covering a multi-field
+  update, `forbidden` for a non-owner, `not_found` for a missing/
+  soft-deleted listing, `invalid_attributes` rejection, and editing a
+  `SOLD` listing succeeding (no status restriction).
+- `npx playwright test` — **11/11 e2e specs passing**, including new
+  `e2e/listing-edit-flow.spec.ts`: a seller creates a listing, opens
+  `/listings/[id]/edit`, sees it pre-filled, edits the title/price,
+  saves, and sees the updated values on the detail page; a non-owner
+  visiting the edit URL directly is redirected away. (Three unrelated
+  specs failed on the first full run from OTP IP-rate-limit exhaustion
+  after many logins in one suite — a known, pre-existing environment
+  artifact, not a regression; clearing the `otp:ip-window:127.0.0.1`
+  Redis key and re-running confirmed all three pass.)
+- `npm run build` — clean; new route `/listings/[id]/edit` (2.79 kB).
 
 ## Tests & Results (Phase 31, all green)
 
@@ -2469,12 +2530,15 @@ None.
 **All three findings from Phase 29's review are now resolved or
 correctly deferred.** Phase 30 built the `/search` price-range filter;
 Phase 31 built the `/admin/audit-log` viewer (action/targetType
-filters, paginated, actor-joined). The one remaining item —
-**owner/legal decision, not to be implemented without input**: whether
-users should be deletable at all (self-service or admin-driven);
-`User.deletedAt` currently has no write path anywhere in the codebase —
-needs a product/legal answer, not an engineering guess (CLAUDE.md
-Section 8).
+filters, paginated, actor-joined). Phase 32 resolved the owner's
+listing-management ask: confirmed listing deletion already worked with
+no restriction, and built the missing `/listings/[id]/edit` page for
+the real gap (editing had zero UI despite a fully-built backend). The
+one remaining item — **owner/legal decision, not to be implemented
+without input**: whether users should be deletable at all
+(self-service or admin-driven); `User.deletedAt` currently has no write
+path anywhere in the codebase — needs a product/legal answer, not an
+engineering guess (CLAUDE.md Section 8).
 
 **No further owner-independent technical gap or product feature is
 currently known.** A future session should run its own fresh OODA
