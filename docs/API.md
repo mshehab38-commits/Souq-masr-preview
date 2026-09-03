@@ -436,6 +436,19 @@ broken down by type (subscriptions / shipping commission / promoted
 listings, never product-sale proceeds), plus the 50 most recent ledger
 rows for a raw audit view.
 
+### `GET /api/admin/audit-log`
+
+Admin-only (Phase 31). Query params: `action` (substring, case-
+insensitive match against the stored `action` string — several real
+action strings are dynamically built, e.g. `` listing.bulk.${action} ``,
+so this is a `contains`, not an exact match), `targetType` (exact
+match), `page`. Returns the standard paginated shape:
+`{ items, page, totalPages, totalCount }`, `items` each carrying
+`actor: { id, name, phone } | null` (joined; `null` when
+`actorType === "SYSTEM"` or when the actor's account has since been
+hard-deleted — `AuditLog.actorId` is `SetNull`, not cascaded).
+`403 { error: "forbidden" }` for a non-admin caller.
+
 ## Reports (Phase 6)
 
 ### `POST /api/reports`
