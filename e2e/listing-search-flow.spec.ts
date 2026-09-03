@@ -78,5 +78,12 @@ test.describe("post a listing with an image, then find it via search", () => {
     await page.goto(`/search?q=${encodeURIComponent("تلفزيون سامسونج")}`);
     await expect(page.getByText(title)).toBeVisible();
     await expect(page.locator("img").first()).toBeVisible();
+
+    // --- price-range filter: a minPrice above the listing's price (3500) excludes it, one below includes it ---
+    await page.goto(`/search?q=${encodeURIComponent("تلفزيون سامسونج")}&minPrice=4000`);
+    await expect(page.getByText(title)).not.toBeVisible();
+
+    await page.goto(`/search?q=${encodeURIComponent("تلفزيون سامسونج")}&minPrice=1000`);
+    await expect(page.getByText(title)).toBeVisible();
   });
 });
