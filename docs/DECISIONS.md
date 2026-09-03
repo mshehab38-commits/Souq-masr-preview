@@ -1731,3 +1731,95 @@ genuinely replace a value in place had a `from` worth capturing.
 
 This closes the audit-log-completeness gap flagged (but not fixed) in
 Phases 23, 24, and 26's own entries above.
+
+## Phase 29: fresh OODA review found the session/CSRF/RBAC core had zero direct unit-test coverage — closed it; two other findings deliberately deferred
+
+Explicitly asked to run one fresh OODA review rather than another rote
+audit, and to pick exactly one outcome (technical gap / product feature
+/ owner decision / no work) rather than manufacture a phase. Three
+read-only investigations covered production-deployment readiness,
+product-feature completeness against `docs/BUSINESS_MODEL.md`, and (the
+angle not covered by any of Phases 20-28) audit-log visibility,
+account-deletion handling, and test-coverage gaps.
+
+**Production readiness: no code gap.** No Dockerfile, no
+`docs/DEPLOYMENT.md`, no deploy step in CI. Confirmed each is a genuine
+platform-choice question (which host — Vercel/Railway/Fly/self-hosted —
+changes what a Dockerfile or deploy doc would even need to say), not
+something engineering can resolve without the owner picking a target
+first. `src/lib/env.ts`'s production-required-var block, the
+`db:migrate:deploy`/`db:migrate dev` split, and `/api/health` are
+already complete. No action taken.
+
+**Selected gap — zero direct unit-test coverage on `src/modules/identity/
+session.ts` and `rbac.ts`.** Grepped `tests/**` for every exported
+function in both files
+(`assertCsrf|generateCsrfToken|createSession|destroySession|
+getSessionUser|getCurrentUser|hasRole|requireAdmin|requireModerator`) —
+zero matches anywhere. These ~90 lines are the single most
+security-critical surface in the app: every session lookup, every CSRF
+check, and every admin/moderator route gate goes through them. In
+particular, `getSessionUser`'s `if (session.user.deletedAt ||
+session.user.status !== "ACTIVE") return null;` is the literal
+enforcement point PROJECT_STATE.md's Phase 6 history describes as "the
+moment a user's status is set to SUSPENDED/BANNED, their session
+lookups start failing immediately" — a claim that had zero regression
+test behind it before this phase, relying entirely on e2e happy paths
+(which never exercise a banned/suspended/expired/revoked session).
+
+Added two new test files, no production code changes:
+
+- `tests/identity/session.test.ts` — real Postgres, no mocks (matches
+  this codebase's standing convention), since `createSession`/
+  `getSessionUser`/`destroySession`/`generateCsrfToken` take no
+  dependency on `next/headers`. Covers: valid-session resolution,
+  unknown/garbage token, expired session, revoked session, deleted
+  user, `SUSPENDED` user, `BANNED` user (the two-case regression proof
+  for the Phase 6 claim above), `destroySession` actually revoking, and
+  basic `generateCsrfToken` uniqueness/format sanity.
+- `tests/identity/rbac.test.ts` — `hasRole` tested as a pure function
+  (all four roles, empty-allowed-list edge case). `requireAdmin`/
+  `requireModerator` both call `getCurrentUser` from the sibling
+  `./session` module, which itself wraps `next/headers`'s `cookies()` —
+  rather than mocking `next/headers` (a pattern with no precedent in
+  this codebase), `vi.mock("@/modules/identity/session", ...)` mocks
+  only `getCurrentUser` directly, the narrowest mock that still lets the
+  three real decision paths (no user / insufficient role / sufficient
+  role) be driven deterministically. This reuses the `vi.mock` pattern
+  already established in
+  `tests/components/states-and-gallery.test.tsx` (there, for
+  `next/image`) rather than introducing a new mocking convention.
+
+**Deliberately left without a direct unit test**: `getCurrentUser` and
+`assertCsrf` themselves — both are thin `next/headers`-`cookies()`
+wrappers around already-covered logic (`getSessionUser`, a plain string
+equality check), and are already exercised end-to-end by every e2e
+spec's login/logout and every CSRF-protected mutation. Mocking
+`next/headers` to reach them directly would be new test-infrastructure
+for marginal additional coverage over what e2e already proves.
+
+**Two other real findings, deliberately not implemented this phase**
+(recorded here so a future session doesn't have to re-run this same
+review from scratch):
+
+- **Search price-range filter has no UI.** `SearchFilters.minPrice`/
+  `maxPrice` (`src/modules/search/types.ts`) and
+  `postgres-provider.ts` fully support it; `src/app/search/page.tsx`'s
+  form has no price inputs at all. A real, safe, owner-independent
+  product feature (same shape as Phase 27's favorites-page gap) —
+  recommended as the next unit of work.
+- **`AuditLog` is completely write-only.** No admin UI page anywhere
+  references it (confirmed via grep across `src/app/admin/**` and every
+  module's exports) — every `{from, to}` metadata investment from
+  Phases 23 and 28 is currently reachable only via direct DB access.
+  A real product gap, but larger in scope (a new page, a new paginated
+  list/filter function, UI design choices) than a single-file fix —
+  a second, bigger candidate for a near-future phase.
+
+**One finding correctly NOT implemented — flagged as an owner/legal
+question instead**: `User.deletedAt` is dead code — no self-service or
+admin-driven user-deletion path exists anywhere (`setUserStatus` only
+ever toggles `status`, never `deletedAt`). Whether users should be
+deletable, and under what retention/legal conditions, is a product/legal
+question this codebase must not invent an answer to (CLAUDE.md Section
+8's "do not invent regulatory, tax, or legal requirements").
