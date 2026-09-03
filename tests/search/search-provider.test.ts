@@ -1,6 +1,44 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { prisma } from "@/lib/db";
 import type { SearchFilters, SearchPage, SearchProvider, SearchResult } from "@/modules/search/types";
 import { PostgresSearchProvider } from "@/modules/search/postgres-provider";
+
+const createdUserIds: string[] = [];
+const createdCategoryIds: string[] = [];
+const createdListingIds: string[] = [];
+
+async function makeUser() {
+  const user = await prisma.user.create({
+    data: { phone: `+2010${Math.floor(10_000_000 + Math.random() * 89_999_999)}` },
+  });
+  createdUserIds.push(user.id);
+  return user;
+}
+
+async function makeCategory() {
+  const category = await prisma.category.create({
+    data: { slug: `search-price-${Math.random().toString(36).slice(2)}`, nameAr: "قسم", nameEn: "Category" },
+  });
+  createdCategoryIds.push(category.id);
+  return category;
+}
+
+async function makeListing(ownerId: string, categoryId: string, price: number) {
+  const listing = await prisma.listing.create({
+    data: { ownerId, categoryId, title: "منتج للفلترة بالسعر", status: "ACTIVE", price },
+  });
+  createdListingIds.push(listing.id);
+  return listing;
+}
+
+async function cleanupPriceFixtures() {
+  await prisma.listing.deleteMany({ where: { id: { in: createdListingIds } } });
+  await prisma.category.deleteMany({ where: { id: { in: createdCategoryIds } } });
+  await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+  createdListingIds.length = 0;
+  createdCategoryIds.length = 0;
+  createdUserIds.length = 0;
+}
 
 // A minimal fake, unrelated to Postgres, proving that anything coded against
 // the SearchProvider interface (like this helper) never needs to know which
@@ -66,5 +104,96 @@ describe("SearchProvider interface boundary", () => {
     const postgres: SearchProvider = new PostgresSearchProvider();
     const count = await countResults(postgres, { query: "a-query-that-matches-nothing-xyz" });
     expect(typeof count).toBe("number");
+  });
+});
+
+// The price-range filter powers /search's UI form and is exercised end to
+// end here — the field is real, tested, DB-backed behavior, not just a
+// type on SearchFilters (see docs/DECISIONS.md's Phase 30 entry).
+describe("PostgresSearchProvider price-range filtering", () => {
+  afterEach(cleanupPriceFixtures);
+
+  it("minPrice excludes listings priced below it", async () => {
+    const user = await makeUser();
+    const category = await makeCategory();
+    const cheap = await makeListing(user.id, category.id, 50);
+    const expensive = await makeListing(user.id, category.id, 500);
+
+    const provider = new PostgresSearchProvider();
+    const result = await provider.search({ categoryId: category.id, minPrice: 100 }, { page: 1, limit: 20 });
+
+    const ids = result.items.map((item) => item.id);
+    expect(ids).toContain(expensive.id);
+    expect(ids).not.toContain(cheap.id);
+  });
+
+  it("maxPrice excludes listings priced above it", async () => {
+    const user = await makeUser();
+    const category = await makeCategory();
+    const cheap = await makeListing(user.id, category.id, 50);
+    const expensive = await makeListing(user.id, category.id, 500);
+
+    const provider = new PostgresSearchProvider();
+    const result = await provider.search({ categoryId: category.id, maxPrice: 100 }, { page: 1, limit: 20 });
+
+    const ids = result.items.map((item) => item.id);
+    expect(ids).toContain(cheap.id);
+    expect(ids).not.toContain(expensive.id);
+  });
+
+  it("minPrice and maxPrice together select only the listings inside the range", async () => {
+    const user = await makeUser();
+    const category = await makeCategory();
+    const tooLow = await makeListing(user.id, category.id, 10);
+    const inRange = await makeListing(user.id, category.id, 150);
+    const tooHigh = await makeListing(user.id, category.id, 900);
+
+    const provider = new PostgresSearchProvider();
+    const result = await provider.search(
+      { categoryId: category.id, minPrice: 100, maxPrice: 200 },
+      { page: 1, limit: 20 },
+    );
+
+    const ids = result.items.map((item) => item.id);
+    expect(ids).toEqual([inRange.id]);
+    expect(ids).not.toContain(tooLow.id);
+    expect(ids).not.toContain(tooHigh.id);
+  });
+
+  it("applies the same price range when a free-text query is also present", async () => {
+    const user = await makeUser();
+    const category = await makeCategory();
+    const cheap = await prisma.listing.create({
+      data: {
+        ownerId: user.id,
+        categoryId: category.id,
+        title: "دراجة هوائية رخيصة",
+        status: "ACTIVE",
+        price: 50,
+        searchText: "دراجه هوائيه رخيصه",
+      },
+    });
+    createdListingIds.push(cheap.id);
+    const expensive = await prisma.listing.create({
+      data: {
+        ownerId: user.id,
+        categoryId: category.id,
+        title: "دراجة هوائية غالية",
+        status: "ACTIVE",
+        price: 500,
+        searchText: "دراجه هوائيه غاليه",
+      },
+    });
+    createdListingIds.push(expensive.id);
+
+    const provider = new PostgresSearchProvider();
+    const result = await provider.search(
+      { query: "دراجة", categoryId: category.id, minPrice: 100 },
+      { page: 1, limit: 20 },
+    );
+
+    const ids = result.items.map((item) => item.id);
+    expect(ids).toContain(expensive.id);
+    expect(ids).not.toContain(cheap.id);
   });
 });

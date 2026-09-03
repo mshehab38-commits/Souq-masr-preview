@@ -14,9 +14,21 @@ interface SearchPageProps {
     q?: string;
     category?: string;
     governorate?: string;
+    minPrice?: string;
+    maxPrice?: string;
     sort?: string;
     page?: string;
   }>;
+}
+
+// A positive, finite number, or undefined for anything else (missing,
+// blank, non-numeric, negative) — invalid input is silently ignored
+// rather than surfaced as a form error, matching how `sort` already
+// falls back to "newest" for any unrecognized value in this file.
+function parsePositiveNumber(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 const SORT_OPTIONS = [
@@ -29,6 +41,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
   const params = await searchParams;
   const page = params.page ? Number(params.page) : 1;
   const sort = params.sort === "price_asc" || params.sort === "price_desc" ? params.sort : "newest";
+  const minPrice = parsePositiveNumber(params.minPrice);
+  const maxPrice = parsePositiveNumber(params.maxPrice);
 
   const [categories, governorates, filters, user] = await Promise.all([
     getCategories(),
@@ -37,6 +51,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       q: params.q,
       category: params.category,
       governorate: params.governorate,
+      minPrice,
+      maxPrice,
       sort,
     }),
     getCurrentUser(),
@@ -96,6 +112,36 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
           </select>
         </div>
         <div className="flex flex-col gap-1.5 text-sm">
+          <label htmlFor="minPrice" className="font-medium text-neutral-700">
+            السعر من
+          </label>
+          <input
+            id="minPrice"
+            name="minPrice"
+            type="number"
+            min={0}
+            inputMode="numeric"
+            defaultValue={params.minPrice}
+            placeholder="بدون حد أدنى"
+            className="h-10 w-32 rounded-lg border border-neutral-300 px-3 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5 text-sm">
+          <label htmlFor="maxPrice" className="font-medium text-neutral-700">
+            إلى
+          </label>
+          <input
+            id="maxPrice"
+            name="maxPrice"
+            type="number"
+            min={0}
+            inputMode="numeric"
+            defaultValue={params.maxPrice}
+            placeholder="بدون حد أقصى"
+            className="h-10 w-32 rounded-lg border border-neutral-300 px-3 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5 text-sm">
           <label htmlFor="sort" className="font-medium text-neutral-700">
             الترتيب
           </label>
@@ -128,6 +174,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
             q: params.q,
             category: params.category,
             governorate: params.governorate,
+            minPrice,
+            maxPrice,
             sort,
           }}
         />

@@ -1823,3 +1823,48 @@ ever toggles `status`, never `deletedAt`). Whether users should be
 deletable, and under what retention/legal conditions, is a product/legal
 question this codebase must not invent an answer to (CLAUDE.md Section
 8's "do not invent regulatory, tax, or legal requirements").
+
+## Phase 30: built the search price-range filter UI Phase 29 recommended as the next unit of work
+
+`SearchFilters.minPrice`/`maxPrice` (`src/modules/search/types.ts`),
+`resolveSearchFilters` (`src/modules/search/query-params.ts`),
+`PostgresSearchProvider`'s `buildWhere`/`buildFilterConditions`, the
+`GET /api/search` route's zod schema, and `matchesListing`'s
+saved-search matching had all supported price filtering end to end
+since Phase 3/12 — only `src/app/search/page.tsx`'s form never exposed
+it, so no user could ever actually filter by price. Confirmed via a
+repo-wide grep this was the *only* missing piece before touching
+anything.
+
+- `src/app/search/page.tsx` — added `minPrice`/`maxPrice` to the page's
+  `searchParams` type, a small `parsePositiveNumber()` helper (missing/
+  blank/non-numeric/negative silently ignored, same "no error state,
+  just fall back" treatment `sort` already gets in this file), two new
+  number inputs ("السعر من" / "إلى") in the existing filter form, and
+  threading the resolved values into both `resolveSearchFilters()` and
+  `SaveSearchButton`'s `query` prop (which already accepted `minPrice`/
+  `maxPrice` in its prop type — it just never received them from the
+  page). `SearchPaginationClient` needed no change: it already builds
+  its page-change URL from the full current `searchParams`, so any new
+  query param (price included) survives a page click automatically.
+- **No changes needed anywhere else** — `resolveSearchFilters`,
+  `PostgresSearchProvider`, `GET /api/search`, and saved-search matching
+  were all already correct; this phase is purely "connect an existing,
+  tested backend capability to the one missing UI control," the same
+  shape as Phase 27's favorites page.
+- **Closed a real, pre-existing test gap while touching this code**:
+  `PostgresSearchProvider`'s price-range filtering itself had zero
+  direct test coverage before this phase (only `matchesListing`'s
+  saved-search-side price check was tested) — now that the filter is
+  actually reachable by real users, added `tests/search/search-provider.test.ts`
+  cases for `minPrice` alone, `maxPrice` alone, both together, and price
+  filtering combined with a free-text query (proving `buildFilterConditions`'s
+  raw-SQL path, not just `buildWhere`'s ORM path, respects the range).
+- Extended `e2e/listing-search-flow.spec.ts`'s existing listing (created
+  at price 3500) with two more assertions: a `minPrice` above it hides
+  the listing, a `minPrice` below it still shows it — proving the real
+  page's form-submitted query actually reaches the backend, not just
+  the API route directly.
+- No financial/business decision involved — a pure UI-completion fix
+  for an already-approved, already-tested filter; no pricing/policy
+  value was touched or invented.

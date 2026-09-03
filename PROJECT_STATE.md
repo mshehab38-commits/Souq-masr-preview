@@ -7,7 +7,7 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-09-03 (Phase 29 completion)
+Last updated: 2026-09-03 (Phase 30 completion)
 
 ## Standing Owner Authorizations (read this before starting any phase)
 
@@ -100,6 +100,16 @@ resolving, a behavior PROJECT_STATE.md itself has described since Phase
 6 with no regression test ever proving it. Closed with two new
 test-only files, zero production code changes.
 
+Phase 30 built exactly the item Phase 29 recommended next: a
+price-range filter on `/search`. The backend (`SearchFilters`,
+`resolveSearchFilters`, `PostgresSearchProvider`, `GET /api/search`'s
+zod schema, and saved-search matching) had supported `minPrice`/
+`maxPrice` since Phase 3/12 — only the page's form never exposed it.
+Added the two form fields, wired them through to the search call and
+`SaveSearchButton`, and closed a real pre-existing test gap found along
+the way (`PostgresSearchProvider`'s price filtering itself had zero
+direct test coverage before this phase).
+
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
 corrected note below for `main`'s actual, up-to-date state).
@@ -162,7 +172,8 @@ tasks to be framed across disciplines).
 | 26 | Completed financial-integrity audit; fixed a real gap — Paymob webhook now cross-checks amount/currency against the order before capturing | 75653f8 | Done |
 | 27 | Product-gap prioritization → built the missing `/favorites` page (backend existed since Phase 3/18, no UI consumer until now) + fixed the favorite-button's stale initial-state bug | `6b290a1` | Done |
 | 28 | Closed the thin-metadata audit-log gap flagged (not fixed) in Phases 23/24/26: six settings/shipping/subscription admin functions now self-audit with `{from, to}` instead of only the submitted value | 25894a1 | Done |
-| 29 | Fresh OODA review (not another rote audit) found and closed a real gap: zero direct unit-test coverage on the session/CSRF/RBAC core (`session.ts`/`rbac.ts`) — including the Phase 6 banned/suspended-session-invalidation claim, which had no regression test behind it | this session | **Done** |
+| 29 | Fresh OODA review (not another rote audit) found and closed a real gap: zero direct unit-test coverage on the session/CSRF/RBAC core (`session.ts`/`rbac.ts`) — including the Phase 6 banned/suspended-session-invalidation claim, which had no regression test behind it | 40a0778 | Done |
+| 30 | Built the `/search` price-range filter UI (Phase 29's recommended next action) — backend (`SearchFilters`, `resolveSearchFilters`, `PostgresSearchProvider`, `GET /api/search`, saved-search matching) already fully supported it; only the page's form was missing it | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1052,6 +1063,40 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
+## What Was Completed in Phase 30
+
+Built the search price-range filter UI — the exact item Phase 29's
+fresh OODA review flagged as the recommended next action. Confirmed
+before touching anything that every backend piece already supported
+`minPrice`/`maxPrice` end to end since Phase 3/12
+(`SearchFilters`, `resolveSearchFilters`, `PostgresSearchProvider`'s
+`buildWhere`/`buildFilterConditions`, `GET /api/search`'s zod schema,
+`matchesListing`'s saved-search matching) — only `src/app/search/page.tsx`'s
+form never exposed the two fields.
+
+- Added `minPrice`/`maxPrice` to the page's `searchParams` type and a
+  small `parsePositiveNumber()` parser (invalid input silently ignored,
+  matching how `sort` already falls back rather than erroring).
+- Added two number inputs ("السعر من" / "إلى") to the existing filter
+  form, and threaded the resolved values into `resolveSearchFilters()`
+  and `SaveSearchButton`'s `query` prop (which already accepted them —
+  it just never received them from the page). `SearchPaginationClient`
+  needed no change since it already preserves the full current
+  `searchParams` on every page click.
+- Closed a real pre-existing test gap found while touching this code:
+  `PostgresSearchProvider`'s price-range filtering had zero direct unit
+  test coverage before this phase. Added four new tests in
+  `tests/search/search-provider.test.ts` (minPrice alone, maxPrice
+  alone, both together, and price filtering combined with a free-text
+  query — covering both the ORM `buildWhere` path and the raw-SQL
+  `buildFilterConditions` path).
+- Extended `e2e/listing-search-flow.spec.ts`'s existing test with two
+  more assertions proving the real page's form-driven search actually
+  respects the price filter, not just the API route directly.
+- No production behavior changed beyond making an already-approved,
+  already-tested filter reachable — no financial/business decision
+  involved.
+
 ## What Was Completed in Phase 29
 
 A fresh OODA review (OBSERVE → ORIENT → DECIDE → ACT), explicitly not
@@ -1131,6 +1176,23 @@ already sufficient). See `docs/DECISIONS.md`'s Phase 28 entry for full
 rationale. No financial/business decision involved — pure audit-trail
 completeness, no behavior change visible to any admin beyond richer
 `AuditLog` rows.
+
+## Tests & Results (Phase 30, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (227 modules, 816 dependencies —
+  unchanged; no new module).
+- `npm test` — **400/400 unit tests passing** across 48 files. New this
+  phase: 4 tests in `tests/search/search-provider.test.ts` covering
+  `PostgresSearchProvider`'s price-range filtering (minPrice alone,
+  maxPrice alone, both together, combined with a free-text query).
+- `npx playwright test` — **9/9 e2e specs passing**, including two new
+  assertions in `e2e/listing-search-flow.spec.ts` proving the real
+  page's price filter actually narrows results.
+- `npm run build` — clean, warning-free production build; `/search`'s
+  bundle size unchanged in any meaningful way (2.68 kB, same as before —
+  two number inputs).
 
 ## Tests & Results (Phase 29, all green)
 
@@ -2336,24 +2398,19 @@ None.
 
 ## Exact Next Action
 
-**Recommended next action (from Phase 29's fresh review): build a
-price-range filter UI on `/search`.** `SearchFilters.minPrice`/
-`maxPrice` and the Postgres provider already fully support it end to
-end (`src/modules/search/types.ts`, `postgres-provider.ts`) — only
-`src/app/search/page.tsx`'s form needs two new inputs and
-`resolveSearchFilters`/the route's query-param parsing needs to read
-them. This is the same shape of gap Phase 27 closed for favorites:
-backend built and tested, zero UI consumer. Small, safe, owner-
-independent, and clearly evidenced (see Phase 29's entry in
-`docs/DECISIONS.md`).
+**Recommended next action: build an admin UI page to view `AuditLog`
+entries** (filterable by actor/action/target/date, paginated). Real and
+valuable — all the `{from, to}` metadata work from Phases 23/28 is
+still currently unreachable by any admin (confirmed by Phase 29's
+review: zero references to `auditLog` anywhere under `src/app/admin/**`).
+Needs a new paginated list/filter service function (mirroring the
+existing `DEFAULT_LIMIT`/`MAX_LIMIT` pagination pattern used everywhere
+else) plus a new admin page — bigger in scope than Phase 30's price
+filter, but the same basic shape (a real backend capability with no UI
+consumer).
 
-**Second candidate, larger in scope**: an admin UI page to view
-`AuditLog` entries (filterable by actor/action/target/date, paginated).
-Real and valuable — all the `{from, to}` metadata work from Phases
-23/28 is currently unreachable by any admin — but needs a new
-paginated list/filter service function plus a new admin page, more
-design surface than the price filter. Do this once the price filter is
-done, not instead of it.
+**Phase 30 closed the previous top recommendation** (the `/search`
+price-range filter) — it is no longer open.
 
 **Owner/legal decision, not to be implemented without input**: whether
 users should be deletable at all (self-service or admin-driven) —
@@ -2361,7 +2418,7 @@ users should be deletable at all (self-service or admin-driven) —
 Needs a product/legal answer, not an engineering guess (CLAUDE.md
 Section 8).
 
-Phases 20 through 29 are all committed and pushed (both branches kept
+Phases 20 through 30 are all committed and pushed (both branches kept
 in sync — see Git Safety in `CLAUDE.md` and this session's owner
 authorization to merge into `main`). Phase 25 closed Phase 24's one
 remaining cosmetic finding (`getUserDetail()`'s over-fetch). Phase 26
