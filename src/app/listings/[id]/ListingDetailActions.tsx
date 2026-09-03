@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { csrfHeaders } from "@/lib/csrf-headers";
 
@@ -56,6 +57,9 @@ export function ListingDetailActions({ listingId, isOwner, isSold, initialFavori
   if (isOwner) {
     return (
       <div className="flex gap-3">
+        <Link href={`/listings/${listingId}/edit`}>
+          <Button variant="outline">تعديل الإعلان</Button>
+        </Link>
         {!isSold && (
           <Button variant="outline" onClick={handleMarkSold} loading={busy}>
             تحديد كمُباع

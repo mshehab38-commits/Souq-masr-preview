@@ -1933,3 +1933,56 @@ This closes the gap identified in Phase 29's review and left open
 through Phase 30 — the last of that review's three findings that was
 actionable without an owner/legal decision (the remaining one,
 whether users should be deletable, still requires that input).
+
+## Phase 32: build the missing "edit listing" page
+
+The owner's ask ("المستخدم يقدر يحذف اعلانات من حسابه سواء قديمه او
+جديده مطلوب تعديلها") turned out, after a clarifying exchange, to be
+about listing management, not the still-open user-account-deletion
+question from Phase 29. Verifying both capabilities directly against
+the code found: **deleting a listing already works with zero
+restrictions** (`softDeleteListing`/`bulkUpdateListings`'s `"delete"`
+branch filter only on ownership + `deletedAt: null`, with two already-
+working UI entry points) — nothing to fix there. **Editing a listing
+had zero UI anywhere**, despite `updateListing`/`PATCH
+/api/listings/[id]` being fully built, tested-adjacent, and already
+re-triggering search re-indexing — the same "backend built, no UI
+consumer" shape as Phases 27/30/31. Given the owner explicitly deferred
+to engineering judgment ("الأفضل من حيث سلاسة الموقع ومصداقيته"), the
+edit page was the unambiguous choice.
+
+- **The edit form's field set matches `PATCH /api/listings/[id]`'s
+  existing zod schema exactly** — `title`, `description`, `price`,
+  `negotiable`, `governorateId`, `cityId`, `attributes`. No category
+  picker and no commerce/fulfillment fields — that route deliberately
+  excludes them (changing category would invalidate category-scoped
+  attribute data; commerce/fulfillment carry their own eligibility
+  rules), and this phase reuses the existing contract rather than
+  expanding it.
+- **No listing-status restriction on editing** — matches
+  `updateListing`'s own pre-existing design (ownership + not-deleted
+  only, no status check), and directly satisfies the owner's "old or
+  new" listings requirement. A seller can edit a `SOLD` listing's
+  details, same as they could always edit an `ACTIVE` one.
+- **Ownership + not-deleted gating lives in the page itself**
+  (`src/app/listings/[id]/edit/page.tsx`), not just the API route —
+  the same defense-in-depth pattern used everywhere else in this
+  codebase (e.g. the ledger page re-checking `requireAdmin()` despite
+  its shared layout already gating). A non-owner is redirected to
+  `/listings/{id}`, not shown a 404 — the listing exists and is
+  visible, only editing it is forbidden, matching
+  `ListingDetailActions`'s existing `isOwner` framing.
+- **`updateListing` had zero direct unit tests before this phase**
+  (confirmed via grep) despite being a pre-existing, already-shipped
+  function — closed alongside making it newly user-reachable, the same
+  pattern this session used for `listAuditLogs` (Phase 31) and the
+  search price filter (Phase 30): ownership/not-found rejection, a
+  successful multi-field update, `invalid_attributes` rejection, and
+  an explicit regression test proving a `SOLD` listing can still be
+  edited (the no-status-restriction design decision above).
+
+### Critical files
+- `src/app/listings/[id]/edit/page.tsx`, `EditListingForm.tsx` (new)
+- `src/app/listings/[id]/ListingDetailActions.tsx` (new edit link)
+- `tests/catalog/listings.test.ts` (new `updateListing` describe block)
+- `e2e/listing-edit-flow.spec.ts` (new)
