@@ -1868,3 +1868,68 @@ anything.
 - No financial/business decision involved — a pure UI-completion fix
   for an already-approved, already-tested filter; no pricing/policy
   value was touched or invented.
+
+## Phase 31: built the AuditLog admin viewer Phases 29/30 recommended, closing the last actionable OODA finding
+
+`AuditLog` was completely write-only: `recordAudit()` is called from
+roughly 35 sites, but a repo-wide grep for
+`prisma.auditLog.findMany/findFirst/count` outside `tests/**` returned
+zero matches before this phase, and no page under `src/app/admin/**`
+referenced it at all. Phases 23 and 28 specifically invested in
+enriching these entries (`{from, to}` metadata) precisely so a future
+admin view could show real diffs — that payoff was never realized
+until now.
+
+- **The read function lives in `src/lib/audit.ts`**, alongside
+  `recordAudit()`, not in a new `src/modules/audit/` module.
+  `src/lib/*` is documented as cross-cutting and importable from
+  anywhere without module-boundary indirection, exactly how
+  `recordAudit` is already imported directly from every module and
+  route — adding its natural read counterpart to the same file avoids
+  inventing a module structure for one function.
+- **`listAuditLogs()` mirrors `listUsers()`'s pagination pattern**
+  (`DEFAULT_LIMIT = 20`, `MAX_LIMIT = 100`,
+  `{ items, page, totalPages, totalCount }`), not `listLedgerEntries`'s
+  simpler `take`-only shape — the ledger page was already a known,
+  separate, admin-only pagination gap (Phase 18's Known Issues), not a
+  pattern to extend further.
+- **`action` filters as a case-insensitive substring, not an exact
+  match** — several real action strings are dynamically built at their
+  call sites (`` `listing.bulk.${action}` ``,
+  `` `order.transition.${targetStatus.toLowerCase()}` ``,
+  `` `store.branding.${kind}` ``), so an exact-match dropdown would
+  never find them.
+- **`targetType` filter options are the actual distinct strings grepped
+  from every `recordAudit(` call site** (`User`, `Listing`, `Order`,
+  `Subscription`, `SubscriptionPlan`, `VerificationRequest`, `Report`,
+  `Store`, `PlatformSettings`, `ShippingCompany`, `ShippingRate`,
+  `ShippingCommissionRule`, `ShippingSettlement`) — not an invented or
+  aspirational list. No actor/date-range filter in this first version;
+  the actor's name/phone is still shown per row via the join below,
+  just not filterable yet — deferred rather than scope-creeping this
+  phase.
+- **Actor display**: `AuditLog.actor` is a typed, nullable relation to
+  `User` with `onDelete: SetNull` — joined via
+  `include: { actor: { select: { id, name, phone } } }`, the same shape
+  `listReports` already uses for its `reporter` field. A row shows the
+  actor's name/phone when present, "النظام" when `actorType ===
+  "SYSTEM"`, and "مستخدم محذوف" when `actorType === "USER"` but
+  `actor` is `null` — a real, reachable case given the `SetNull` FK
+  (a hard-deleted actor, not merely banned/suspended).
+- **Access gate is `requireAdmin()`, not `requireModerator()`** —
+  matching `settings`/`plans`/`shipping`/`ledger`'s existing pattern
+  (the shared `/admin` layout admits `MODERATOR`, but each
+  financial-adjacent page re-checks `requireAdmin()` itself and
+  redirects), since audit entries routinely carry financial-adjacent
+  metadata (settings, shipping commission, subscription plan changes).
+- **New `@@index([createdAt])` on `AuditLog`** — the table previously
+  had only `@@index([actorId])`/`@@index([action])`, and this page's
+  default (unfiltered) query sorts by `createdAt desc`. Added to match
+  this exact new query shape, following Phase 20's own precedent of
+  adding an index for a real, newly-introduced query pattern rather
+  than a speculative composite for hypothetical future filters.
+
+This closes the gap identified in Phase 29's review and left open
+through Phase 30 — the last of that review's three findings that was
+actionable without an owner/legal decision (the remaining one,
+whether users should be deletable, still requires that input).

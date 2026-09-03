@@ -7,7 +7,7 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-09-03 (Phase 30 completion)
+Last updated: 2026-09-03 (Phase 31 completion)
 
 ## Standing Owner Authorizations (read this before starting any phase)
 
@@ -110,6 +110,16 @@ Added the two form fields, wired them through to the search call and
 the way (`PostgresSearchProvider`'s price filtering itself had zero
 direct test coverage before this phase).
 
+Phase 31 closed the last remaining actionable item from Phase 29's
+review: `AuditLog` was completely write-only (zero read function
+anywhere, zero admin UI page referencing it), so all the `{from, to}`
+metadata work from Phases 23/28 was unreachable by any admin. Added
+`listAuditLogs()` (`src/lib/audit.ts`, mirroring `listUsers()`'s
+pagination pattern), `GET /api/admin/audit-log`, and a new
+`/admin/audit-log` page (action substring + targetType filters,
+paginated, actor name/phone joined per row) — ADMIN-gated, matching
+`settings`/`plans`/`shipping`/`ledger`'s existing pattern.
+
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
 corrected note below for `main`'s actual, up-to-date state).
@@ -173,7 +183,8 @@ tasks to be framed across disciplines).
 | 27 | Product-gap prioritization → built the missing `/favorites` page (backend existed since Phase 3/18, no UI consumer until now) + fixed the favorite-button's stale initial-state bug | `6b290a1` | Done |
 | 28 | Closed the thin-metadata audit-log gap flagged (not fixed) in Phases 23/24/26: six settings/shipping/subscription admin functions now self-audit with `{from, to}` instead of only the submitted value | 25894a1 | Done |
 | 29 | Fresh OODA review (not another rote audit) found and closed a real gap: zero direct unit-test coverage on the session/CSRF/RBAC core (`session.ts`/`rbac.ts`) — including the Phase 6 banned/suspended-session-invalidation claim, which had no regression test behind it | 40a0778 | Done |
-| 30 | Built the `/search` price-range filter UI (Phase 29's recommended next action) — backend (`SearchFilters`, `resolveSearchFilters`, `PostgresSearchProvider`, `GET /api/search`, saved-search matching) already fully supported it; only the page's form was missing it | this session | **Done** |
+| 30 | Built the `/search` price-range filter UI (Phase 29's recommended next action) — backend (`SearchFilters`, `resolveSearchFilters`, `PostgresSearchProvider`, `GET /api/search`, saved-search matching) already fully supported it; only the page's form was missing it | aca275e | Done |
+| 31 | Built the `/admin/audit-log` viewer — `AuditLog` was completely write-only until now; new `listAuditLogs()` (`src/lib/audit.ts`), `GET /api/admin/audit-log`, and an admin page with action/targetType filters + pagination | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1055,13 +1066,50 @@ runtime bug. Fixed by moving the fallback rate onto
 
 ## Database
 
-- 18 migrations applied — unchanged this phase (Phase 22 is a pure
-  application-code change, no schema change). Last migration:
-  `20260831192836_add_composite_indexes_for_pagination_queries` (Phase
-  20 — 12 composite indexes across `User`/`VerificationRequest`/
-  `Listing`/`Favorite`/`Order`/`LedgerEntry`/`Report`). Schema at
+- 19 migrations applied. Last migration:
+  `20260903082346_add_audit_log_created_at_index` (Phase 31 — supports
+  `/admin/audit-log`'s default `createdAt desc` sort). Schema at
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
+
+## What Was Completed in Phase 31
+
+Built the admin UI to view `AuditLog` entries — the last actionable
+finding from Phase 29's fresh review, after Phase 30 closed the
+price-filter one. Confirmed before implementing that `AuditLog` was
+completely write-only: `recordAudit()` has ~35 call sites, but zero
+read function existed anywhere and zero admin page referenced it.
+
+- **`src/lib/audit.ts`** — new `listAuditLogs(filter)`, living
+  alongside `recordAudit()` in the same file rather than a new module
+  (`src/lib/*` is cross-cutting, already imported directly everywhere).
+  Mirrors `listUsers()`'s exact pagination pattern
+  (`DEFAULT_LIMIT=20`/`MAX_LIMIT=100`,
+  `{items, page, totalPages, totalCount}`). Filters: `action`
+  (case-insensitive substring — several real action strings are
+  dynamically built, e.g. `` `listing.bulk.${action}` ``, so exact
+  match would miss them), `targetType` (exact). Joins
+  `actor: {id, name, phone}` via the existing `AuditLog.actor` relation.
+- **`GET /api/admin/audit-log`** — `requireAdmin()`-gated (matching
+  `settings`/`plans`/`shipping`/`ledger`, not the looser
+  `requireModerator()`, since entries carry financial-adjacent
+  metadata), parses `action`/`targetType`/`page`, returns the paginated
+  result.
+- **New `/admin/audit-log` page** — a Server Component
+  (`requireAdmin()` redirect, matching the ledger page's pattern)
+  rendering a client `AuditLogViewer` mirroring `UsersDirectory.tsx`'s
+  filter+pagination shape: an action text filter, a `targetType`
+  dropdown built from the actual distinct strings grepped from every
+  `recordAudit(` call site (not invented), and per-row actor/date/
+  action/target/metadata display (metadata pretty-printed, actor shown
+  as "النظام" for system actions or "مستخدم محذوف" for a hard-deleted
+  actor). Added to the admin nav as "سجل النشاط".
+- **New `@@index([createdAt])` on `AuditLog`** — the table had no index
+  supporting this page's default `createdAt desc` sort; added to match
+  this exact new query shape (Phase 20's own precedent).
+- No financial/business decision involved — the feature only makes
+  already-existing, already-approved audit data visible; no new value
+  invented.
 
 ## What Was Completed in Phase 30
 
@@ -1176,6 +1224,26 @@ already sufficient). See `docs/DECISIONS.md`'s Phase 28 entry for full
 rationale. No financial/business decision involved — pure audit-trail
 completeness, no behavior change visible to any admin beyond richer
 `AuditLog` rows.
+
+## Tests & Results (Phase 31, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (230 modules, 828 dependencies —
+  up from 227/816 with the three new files, no violations).
+- `npm test` — **406/406 unit tests passing** across 49 files. New this
+  phase: `tests/lib/audit.test.ts` (6 tests) covering
+  `listAuditLogs`'s pagination, newest-first ordering, `action`
+  substring filter, `targetType` exact filter, and the actor join
+  (populated vs. `null` for a `SYSTEM` entry).
+- `npx playwright test` — **10/10 e2e specs passing**, including new
+  `e2e/audit-log-flow.spec.ts`: an admin changes a platform setting,
+  then sees the resulting `settings.update` row (attributed to their
+  own name) on `/admin/audit-log` after filtering by `targetType`.
+- `npm run build` — clean, warning-free production build; two new
+  routes (`/admin/audit-log`, `/api/admin/audit-log`).
+- `npx prisma migrate dev` (bare, no `--name`) — confirmed "already in
+  sync" after the named `add_audit_log_created_at_index` migration.
 
 ## Tests & Results (Phase 30, all green)
 
@@ -2398,27 +2466,25 @@ None.
 
 ## Exact Next Action
 
-**Recommended next action: build an admin UI page to view `AuditLog`
-entries** (filterable by actor/action/target/date, paginated). Real and
-valuable — all the `{from, to}` metadata work from Phases 23/28 is
-still currently unreachable by any admin (confirmed by Phase 29's
-review: zero references to `auditLog` anywhere under `src/app/admin/**`).
-Needs a new paginated list/filter service function (mirroring the
-existing `DEFAULT_LIMIT`/`MAX_LIMIT` pagination pattern used everywhere
-else) plus a new admin page — bigger in scope than Phase 30's price
-filter, but the same basic shape (a real backend capability with no UI
-consumer).
-
-**Phase 30 closed the previous top recommendation** (the `/search`
-price-range filter) — it is no longer open.
-
-**Owner/legal decision, not to be implemented without input**: whether
-users should be deletable at all (self-service or admin-driven) —
-`User.deletedAt` currently has no write path anywhere in the codebase.
-Needs a product/legal answer, not an engineering guess (CLAUDE.md
+**All three findings from Phase 29's review are now resolved or
+correctly deferred.** Phase 30 built the `/search` price-range filter;
+Phase 31 built the `/admin/audit-log` viewer (action/targetType
+filters, paginated, actor-joined). The one remaining item —
+**owner/legal decision, not to be implemented without input**: whether
+users should be deletable at all (self-service or admin-driven);
+`User.deletedAt` currently has no write path anywhere in the codebase —
+needs a product/legal answer, not an engineering guess (CLAUDE.md
 Section 8).
 
-Phases 20 through 30 are all committed and pushed (both branches kept
+**No further owner-independent technical gap or product feature is
+currently known.** A future session should run its own fresh OODA
+review (per the standing "don't just trust the last list" precedent
+demonstrated across this project's whole history) rather than assume
+nothing remains — but this is a genuine point to check with the owner
+for a product-direction preference before defaulting to "audit again,"
+matching the same posture Phase 24/29 already recommended.
+
+Phases 20 through 31 are all committed and pushed (both branches kept
 in sync — see Git Safety in `CLAUDE.md` and this session's owner
 authorization to merge into `main`). Phase 25 closed Phase 24's one
 remaining cosmetic finding (`getUserDetail()`'s over-fetch). Phase 26
