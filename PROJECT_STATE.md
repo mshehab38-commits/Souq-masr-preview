@@ -7,11 +7,11 @@
 > touching any financial logic, and `docs/OWNER_WORK_METHOD.md` for how
 > the owner expects tasks to be framed.
 
-Last updated: 2026-09-02 (Phase 28 completion)
+Last updated: 2026-09-03 (Phase 29 completion)
 
 ## Current Status
 
-**Phases 20 through 28 are all COMPLETE, validated, committed, and
+**Phases 20 through 29 are all COMPLETE, validated, committed, and
 pushed**: Phase 20 (twelve composite database indexes), Phase 21 (a
 shared rate-limit utility wired into the three most abuse-prone write
 endpoints, plus a root-cause verification-request pending-dedupe fix),
@@ -54,6 +54,20 @@ the thin-metadata audit-log gap flagged but not fixed in Phases 23/24/26:
 self-audit with `{from, to}` metadata, moving `recordAudit` into the
 module layer the same way Phase 23 did for `setUserStatus`/
 `adminRemoveListing`/`flagListingForReview`).
+
+Phase 29 was a fresh OODA review, explicitly not another rote audit —
+three read-only investigations checked production-deployment readiness
+(no code gap; every candidate is a platform-choice question), product-
+feature completeness against `docs/BUSINESS_MODEL.md` (found two real
+but larger-scope UI gaps, deferred — see Exact Next Action), and (the
+fresh angle) audit-log visibility/account-deletion/test-coverage. The
+selected, implemented finding: `src/modules/identity/session.ts` and
+`rbac.ts` — the entire session/CSRF/authorization core — had **zero**
+direct unit-test coverage, including the specific `getSessionUser`
+enforcement line that makes a `SUSPENDED`/`BANNED` user's sessions stop
+resolving, a behavior PROJECT_STATE.md itself has described since Phase
+6 with no regression test ever proving it. Closed with two new
+test-only files, zero production code changes.
 
 Branch: `claude/souq-masr-production-plan-g38qwv` (the working
 development branch, where every session's commits land first — see the
@@ -116,7 +130,8 @@ tasks to be framed across disciplines).
 | 25 | `getUserDetail()` scoped to an explicit Prisma `select` — closes the Phase 24 data-minimization nit | 1a39277 | Done |
 | 26 | Completed financial-integrity audit; fixed a real gap — Paymob webhook now cross-checks amount/currency against the order before capturing | 75653f8 | Done |
 | 27 | Product-gap prioritization → built the missing `/favorites` page (backend existed since Phase 3/18, no UI consumer until now) + fixed the favorite-button's stale initial-state bug | `6b290a1` | Done |
-| 28 | Closed the thin-metadata audit-log gap flagged (not fixed) in Phases 23/24/26: six settings/shipping/subscription admin functions now self-audit with `{from, to}` instead of only the submitted value | this session | **Done** |
+| 28 | Closed the thin-metadata audit-log gap flagged (not fixed) in Phases 23/24/26: six settings/shipping/subscription admin functions now self-audit with `{from, to}` instead of only the submitted value | 25894a1 | Done |
+| 29 | Fresh OODA review (not another rote audit) found and closed a real gap: zero direct unit-test coverage on the session/CSRF/RBAC core (`session.ts`/`rbac.ts`) — including the Phase 6 banned/suspended-session-invalidation claim, which had no regression test behind it | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1006,6 +1021,51 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
+## What Was Completed in Phase 29
+
+A fresh OODA review (OBSERVE → ORIENT → DECIDE → ACT), explicitly not
+another rote audit pass. Three read-only investigations, each verified
+directly afterward rather than trusted blind:
+
+1. **Production deployment readiness** — no code-fixable gap found.
+   Absence of a Dockerfile, `docs/DEPLOYMENT.md`, and any CI deploy step
+   are all genuine platform-choice questions (which host — that decision
+   changes what any of those artifacts would even need to contain), not
+   engineering gaps. `env.ts`'s production-required vars, the
+   `migrate deploy`/`migrate dev` split, and `/api/health` are already
+   correct and complete.
+2. **Product-feature completeness vs. `docs/BUSINESS_MODEL.md`** — found
+   two real UI gaps for already-built backend capability (the exact
+   shape of gap Phase 27 closed for favorites): the search page has no
+   price-range filter despite `SearchFilters.minPrice`/`maxPrice` being
+   fully implemented end-to-end, and `AuditLog` (the very feature
+   Phases 23/28 invested in enriching) has zero admin UI anywhere to
+   view it — write-only from every admin's perspective. Both are real
+   and recommended as the next two units of work (see Exact Next
+   Action), but both are new-page-sized product features, not a single
+   safe fix — correctly not force-fit into this phase.
+3. **Selected and implemented**: `src/modules/identity/session.ts` and
+   `rbac.ts` — the session/CSRF/authorization core — had zero direct
+   unit-test coverage anywhere (confirmed via grep across `tests/**`
+   for every exported function name; zero matches). Closed with two new
+   test-only files (`tests/identity/session.test.ts`,
+   `tests/identity/rbac.test.ts`), zero production code changes. Covers
+   valid/expired/revoked/unknown-token session resolution, the
+   deleted-user and `SUSPENDED`/`BANNED`-user rejection paths inside
+   `getSessionUser` (the exact enforcement point this file's own Phase
+   6 history describes but had never had a regression test), and
+   `hasRole`/`requireAdmin`/`requireModerator`'s three decision paths
+   (no user / insufficient role / sufficient role), the latter two via
+   a narrow `vi.mock` of `getCurrentUser` only.
+4. **One finding correctly flagged as an owner/legal decision, not
+   implemented**: `User.deletedAt` is dead code — no user-deletion path
+   (self-service or admin) exists anywhere. Whether users should be
+   deletable, and under what conditions, needs legal/product input this
+   codebase must not invent (CLAUDE.md Section 8).
+
+See `docs/DECISIONS.md`'s Phase 29 entry for the full reasoning behind
+each of these four outcomes.
+
 ## What Was Completed in Phase 28
 
 Closed the thin-metadata audit-log gap flagged (but not fixed) in
@@ -1040,6 +1100,20 @@ already sufficient). See `docs/DECISIONS.md`'s Phase 28 entry for full
 rationale. No financial/business decision involved — pure audit-trail
 completeness, no behavior change visible to any admin beyond richer
 `AuditLog` rows.
+
+## Tests & Results (Phase 29, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (227 modules, 816 dependencies —
+  unchanged; two new test files don't affect `src/` module boundaries).
+- `npm test` — **396/396 unit tests passing** across 48 files. New this
+  phase: `tests/identity/session.test.ts` (12 tests) and
+  `tests/identity/rbac.test.ts` (10 tests) — 22 new tests total, zero
+  regressions.
+- `npx playwright test` — **9/9 e2e specs passing**, unmodified (no
+  production behavior changed — test-only phase).
+- `npm run build` — clean, warning-free production build.
 
 ## Tests & Results (Phase 28, all green)
 
@@ -2231,7 +2305,32 @@ None.
 
 ## Exact Next Action
 
-Phases 20 through 28 are all committed and pushed (both branches kept
+**Recommended next action (from Phase 29's fresh review): build a
+price-range filter UI on `/search`.** `SearchFilters.minPrice`/
+`maxPrice` and the Postgres provider already fully support it end to
+end (`src/modules/search/types.ts`, `postgres-provider.ts`) — only
+`src/app/search/page.tsx`'s form needs two new inputs and
+`resolveSearchFilters`/the route's query-param parsing needs to read
+them. This is the same shape of gap Phase 27 closed for favorites:
+backend built and tested, zero UI consumer. Small, safe, owner-
+independent, and clearly evidenced (see Phase 29's entry in
+`docs/DECISIONS.md`).
+
+**Second candidate, larger in scope**: an admin UI page to view
+`AuditLog` entries (filterable by actor/action/target/date, paginated).
+Real and valuable — all the `{from, to}` metadata work from Phases
+23/28 is currently unreachable by any admin — but needs a new
+paginated list/filter service function plus a new admin page, more
+design surface than the price filter. Do this once the price filter is
+done, not instead of it.
+
+**Owner/legal decision, not to be implemented without input**: whether
+users should be deletable at all (self-service or admin-driven) —
+`User.deletedAt` currently has no write path anywhere in the codebase.
+Needs a product/legal answer, not an engineering guess (CLAUDE.md
+Section 8).
+
+Phases 20 through 29 are all committed and pushed (both branches kept
 in sync — see Git Safety in `CLAUDE.md` and this session's owner
 authorization to merge into `main`). Phase 25 closed Phase 24's one
 remaining cosmetic finding (`getUserDetail()`'s over-fetch). Phase 26
@@ -2240,8 +2339,10 @@ session had started but never finished, finding and fixing one real
 gap (the Paymob webhook's amount/currency cross-check). Phase 27 built
 the missing `/favorites` page. Phase 28 closed the thin-metadata
 audit-log gap this section used to list as the leading remaining
-candidate — it is no longer open. This session ran eleven fresh audits
-total, per the owner's explicit continuation
+candidate — it is no longer open. Phase 29 was a fresh OODA review
+(not another rote audit) that found and closed a real gap: zero direct
+unit-test coverage on the session/CSRF/RBAC core. Phases 20-26 ran
+eleven fresh audits total, per the owner's explicit continuation
 directive to keep re-auditing and implementing every owner-independent
 technical gap found rather than stopping at the first "nothing left"
 conclusion: IDOR/authorization, rate limiting, DB indexes,
