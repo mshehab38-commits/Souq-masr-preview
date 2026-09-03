@@ -9,6 +9,37 @@
 
 Last updated: 2026-09-03 (Phase 29 completion)
 
+## Standing Owner Authorizations (read this before starting any phase)
+
+These apply to every future session on this project until the owner
+revokes or narrows them. Do not re-ask for these specific approvals —
+proceed automatically:
+
+- **Auto-merge to `main` after every phase.** Once a phase's changes
+  are committed and pushed to `claude/souq-masr-production-plan-g38qwv`
+  and the full validation suite is green (`typecheck`, `lint`,
+  `boundaries`, `npm test`, `npx playwright test`, `npm run build`),
+  merge into `main` immediately via a real merge commit (never a
+  rewrite/force-push) and push `main` — do not stop to ask for approval
+  first. Verify `git diff` between the two branches is empty both
+  before and after, exactly as every phase from 12 onward has already
+  done. Deliver the usual short completion report afterward (what
+  changed, validation results, next action) — that's a notification,
+  not a request for permission.
+- **This authorization does NOT cover**: skipping validation before
+  merging, merging when a check is red, or any action that needs an
+  owner/financial/legal decision (an undocumented price/commission/
+  policy value, a genuine product-direction choice, anything CLAUDE.md
+  Section 6 or `docs/BUSINESS_MODEL.md` §7 flags as OWNER DECISION
+  REQUIRED). Those still stop and ask, exactly as before.
+- **Documentation stays single-file, not per-phase.** `PROJECT_STATE.md`
+  and `docs/DECISIONS.md` each remain one growing file with phases
+  appended in order (matching the pattern since Phase 1) — do not split
+  future phases into separate files. This keeps the CLAUDE.md Section 1
+  "read PROJECT_STATE.md + `git log` at session start" recovery model
+  working without forcing a future session to hunt across many files to
+  reconstruct current state.
+
 ## Current Status
 
 **Phases 20 through 29 are all COMPLETE, validated, committed, and
