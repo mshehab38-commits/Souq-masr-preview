@@ -2234,3 +2234,52 @@ this codebase's established diligence for concurrency tests (Phase
   cannot. No new notification-delivery architecture was introduced —
   this is the same accepted trade-off already made for every
   notification type, not a gap specific to account deletion.
+
+## Phase 35: bound notifyMatchingSavedSearches's unbounded query
+
+`notifyMatchingSavedSearches` (`src/modules/search/saved-searches.ts`)
+called `prisma.savedSearch.findMany()` with zero arguments — no
+`where`, no `take` — loading the entire `SavedSearch` table on every
+single listing create/edit. Flagged in Phase 33's review as the
+strongest remaining purely-technical gap, deliberately deferred there
+because a proper fix "deserves its own focused pass."
+
+- **Cursor-paginated drain loop, not a SQL-filter rewrite.**
+  `SavedSearch.query` is a plain, unindexed `Json` column, and every
+  field within it (`category`, `governorate`, `city`, `minPrice`,
+  `maxPrice`, `q`) is optional — a missing filter matches everything,
+  so the predicate can't be pushed into a SQL `WHERE` without a
+  JSON-path rewrite this codebase has no precedent for. The free-text
+  `q` field specifically can't be pushed at all without also storing a
+  normalized column: `matchesListing` runs `normalizeArabicText()` on
+  both sides of the substring check before comparing. A SQL rewrite
+  would also be disproportionate risk (new NULL-handling/casting edge
+  cases in a notification-critical path) for a gap with no evidence of
+  current-scale pain (Phase 33's own words). Bounding the fetch with a
+  real cursor loop (`orderBy: { id: "asc" }`, `cursor`/`skip: 1`,
+  `take: batchSize`) fixes the literal defect — an unbounded query with
+  no bound at all — matching this codebase's own "every list query
+  must be bounded" convention, just adapted to a background job's
+  internal drain instead of a user-facing response page. Pushing
+  filters into SQL remains a legitimate future optimization if real
+  usage data ever shows total scan cost (not just memory) is the
+  bottleneck — not built speculatively here.
+- **`SAVED_SEARCH_BATCH_SIZE = 500`** — a generous technical default
+  bounding how many rows are held in memory per fetch, not a business
+  decision.
+- **`batchSize` is an optional second parameter**
+  (`notifyMatchingSavedSearches(listingId, batchSize = 500)`), mirroring
+  this codebase's existing injectable-default pattern for testability
+  (`sweepExpiredListings(now: Date = new Date())`). Tests pass a tiny
+  `batchSize` (1 or 2) against a handful of real rows to exercise the
+  cursor loop crossing multiple pages, instead of needing 500+ real
+  rows to prove the mechanism works. The production default is
+  unaffected — only the constant is overridden in tests.
+- The existing per-user first-match-wins dedup (`matchedUserIds`, a
+  `Map` built across the whole loop) needed no change — it already
+  works correctly across multiple batches since it's never reset
+  per-page.
+
+### Critical files
+- `src/modules/search/saved-searches.ts`
+- `tests/search/saved-searches.test.ts`

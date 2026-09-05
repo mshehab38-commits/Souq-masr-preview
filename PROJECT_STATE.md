@@ -187,7 +187,8 @@ tasks to be framed across disciplines).
 | 31 | Built the `/admin/audit-log` viewer — `AuditLog` was completely write-only until now; new `listAuditLogs()` (`src/lib/audit.ts`), `GET /api/admin/audit-log`, and an admin page with action/targetType filters + pagination | 56fca86 | Done |
 | 32 | Owner clarified a "user deletion" question was really about listing management. Verified delete already fully works; built the missing `/listings/[id]/edit` page — `updateListing`/`PATCH /api/listings/[id]` were fully built and tested-adjacent but had zero UI consumer | a04627c | Done |
 | 33 | Fresh OODA review (two Explore agents, product + technical angles). Built SEO essentials (`robots.ts`, `sitemap.ts`, per-page `generateMetadata` for search/listing/store) and fixed a real live gap: the store page had no way to contact the seller at all | d523b2a | Done |
-| 34 | Owner resolved the long-standing account-deletion OWNER DECISION: users can never delete their own account directly, only submit a request an admin must approve. Built `AccountDeletionRequest` submit/cancel/admin-review flow with a full cascade (locks the account, revokes sessions, soft-deletes listings + store). Owner's post-merge four-point implementation gate found and this session fixed one real bug: `reviewAccountDeletionRequest` lacked concurrency-safe atomic approval | this session | **Done** |
+| 34 | Owner resolved the long-standing account-deletion OWNER DECISION: users can never delete their own account directly, only submit a request an admin must approve. Built `AccountDeletionRequest` submit/cancel/admin-review flow with a full cascade (locks the account, revokes sessions, soft-deletes listings + store). Owner's post-merge four-point implementation gate found and this session fixed one real bug: `reviewAccountDeletionRequest` lacked concurrency-safe atomic approval | 49dd896 | Done |
+| 35 | Bounded `notifyMatchingSavedSearches`'s unbounded `prisma.savedSearch.findMany()` (Phase 33's own recorded strongest remaining technical candidate) with a cursor-paginated drain loop | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1075,6 +1076,26 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
+## What Was Completed in Phase 35
+
+Picked up Phase 33's own recorded "strongest remaining purely-technical
+candidate": `notifyMatchingSavedSearches`
+(`src/modules/search/saved-searches.ts`) called
+`prisma.savedSearch.findMany()` with zero arguments — no `where`, no
+`take` — loading the entire `SavedSearch` table on every single
+listing create/edit. Fixed with a real cursor-paginated drain loop
+(`orderBy: { id: "asc" }`, `cursor`/`skip: 1`, `take: batchSize`,
+default 500) instead of a speculative SQL-filter rewrite — `query` is
+a plain, unindexed `Json` column with every field optional, and the
+free-text `q` field specifically can't be pushed to SQL at all without
+a new normalized column (`matchesListing` runs `normalizeArabicText()`
+on both sides before comparing). `batchSize` is an optional second
+parameter (mirroring `sweepExpiredListings`'s injectable-`now`
+testability pattern) so tests can exercise the multi-page path with a
+handful of real rows instead of needing 500+. No behavior change for
+any real, current-scale table — same matches, same notifications, just
+bounded memory per fetch.
+
 ## What Was Completed in Phase 34
 
 The owner explicitly resolved the account-deletion OWNER DECISION
@@ -1359,6 +1380,29 @@ claim pattern already established in
 inside the same transaction and a refused approval now rolling back
 via a thrown sentinel error (not a silent early return) so it never
 leaves the request wrongly marked decided.
+
+## Tests & Results (Phase 35, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (241 modules, 876 dependencies,
+  unchanged — no new files this phase).
+- `npm test` — **428/428 unit tests passing** across 50 files. New this
+  phase, in `tests/search/saved-searches.test.ts`: a test forcing the
+  drain loop across 3 pages (`batchSize: 2`, 5 saved searches split
+  across 3 users, a mix of matching/non-matching queries) asserting all
+  real matches are found and non-matches excluded; a test proving
+  per-user dedup still works when a user's two matching saved searches
+  land on different pages (`batchSize: 1`).
+- `npx playwright test` — **12/12 e2e specs passing**, no e2e-visible
+  behavior change expected or found — this is an internal fetch-
+  strategy fix, not a feature. (Three unrelated specs failed on the
+  first full run from OTP IP-rate-limit exhaustion after many logins
+  in one suite — a known, pre-existing environment artifact, not a
+  regression; clearing the `otp:ip-window:127.0.0.1` Redis key and
+  re-running confirmed all three pass.)
+- `npm run build` — clean, no route changes (this phase touches only a
+  background-job internal function, not any route).
 
 ## Tests & Results (Phase 34, all green — includes the concurrency fix above)
 
@@ -1810,15 +1854,10 @@ leaves the request wrongly marked decided.
   deliberately not implemented this phase** (kept the phase completable
   in one clean pass — see `docs/DECISIONS.md`'s Phase 33 entry for the
   full evidence trail):
-  - `notifyMatchingSavedSearches` (`src/modules/search/saved-searches.ts:143`)
-    loads the entire `SavedSearch` table with no `where`/`take` on every
-    single listing create/edit — real technical debt (the same
-    unbounded-query class Phases 17/18/20 fixed elsewhere, missed here
-    because it's a background-job internal query, not an API-facing
-    "list my own data" endpoint), but no evidence of current pain at
-    this project's actual scale. Proper fix needs its own focused pass
-    (batching, or pushing simple filters into SQL) rather than being
-    bolted onto an unrelated phase.
+  - ~~`notifyMatchingSavedSearches` loads the entire `SavedSearch` table
+    with no `where`/`take` on every single listing create/edit~~ —
+    **resolved in Phase 35**: bounded with a cursor-paginated drain
+    loop (`take: 500` per page, `orderBy: id asc`).
   - No proactive notification when a listing expires — the expiry sweep
     silently flips status with no `NotificationType` for it. A seller
     only finds out by checking `/listings/mine`.
@@ -2737,16 +2776,19 @@ deletion). **No owner decision is currently open.**
 Phase 33's fresh OODA review found six real, evidence-backed items,
 deliberately deferred to keep that phase completable in one clean pass
 (full detail in Known Issues → Deferred and `docs/DECISIONS.md`'s Phase
-33 entry). The **strongest remaining purely-technical candidate** for a
-future phase is `notifyMatchingSavedSearches`'s unbounded
-`prisma.savedSearch.findMany()` (`src/modules/search/saved-searches.ts:143`)
-— loads the entire table on every listing create/edit, no evidence of
-current-scale pain but a real, previously-unaudited gap in the exact
-class Phases 17/18/20 have fixed elsewhere. Other real candidates: a
-dedicated test-coverage phase for `toggleFavorite`/image-confirm-delete/
-`uploadStoreBranding`/etc. (safe, matches the Phase 29 precedent), or a
+33 entry). Phase 35 closed the strongest of those
+(`notifyMatchingSavedSearches`'s unbounded query). The **remaining real
+candidates**: a dedicated test-coverage phase for
+`toggleFavorite`/image-confirm-delete/`uploadStoreBranding`/
+`softDeleteListing`/`markListingAsSold`/`incrementListingViewCount`/
+`getSellerStats` (safe, matches the Phase 29 precedent), a
 listing-expiry notification (bigger scope — new enum value + migration
-+ job wiring).
++ job wiring), a `NotificationBell` accessibility gap
+(`aria-expanded`/`role="menu"`/Escape-to-close), user blocking/muting
+(flagged absent since Phase 6, still not urgent), and a test proving
+Arabic fuzzy/typo-tolerant search matching (the `word_similarity`
+implementation itself is correct and already shipped — only the test
+coverage for that specific behavior is missing).
 
 **No further owner-independent technical gap or product feature beyond
 the above is currently known.** A future session should run its own
