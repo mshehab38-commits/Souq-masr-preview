@@ -2066,3 +2066,82 @@ reference product (CLAUDE.md's own stated model), not an oversight.
   `src/app/search/page.tsx`
 - `tests/catalog/listings.test.ts`, `tests/store/store.test.ts`
 - `e2e/store-management-flow.spec.ts`
+
+## Phase 34: self-service account deletion request + admin approval
+
+The long-standing OWNER DECISION REQUIRED item from Phases 6/29
+(whether users should be able to delete their accounts) is now
+resolved by explicit owner instruction: **a user cannot delete their
+own account directly — they submit a request, and it only takes effect
+once an admin approves it.**
+
+- **A dedicated `AccountDeletionRequest` model, not an extra
+  `VerificationRequestType` value.** The two flows have completely
+  different side effects on approval (verification stamps one field
+  and maybe a role; deletion cascades across `Listing`/`Store` and
+  permanently locks the account) and different admin-queue semantics.
+  Overloading one model for both would blur two unrelated admin
+  workflows to save one migration — this codebase's own precedent
+  (`Report` got its own model in Phase 6 rather than reusing
+  `VerificationRequest`) favors a dedicated, explicit model.
+- **Gated `requireAdmin()`, not `requireModerator()`** — matching
+  `settings`/`plans`/`shipping`/`ledger`/`audit-log`'s precedent for
+  consequential admin-only actions. Deleting a user's entire public
+  presence (account + every listing + their store) is at least as
+  consequential as those.
+- **A "last remaining admin" guard on approval**, mirroring the
+  principle behind `setUserRole`'s own last-admin-lockout safeguard: if
+  the target user is the sole remaining `ADMIN`,
+  `reviewAccountDeletionRequest` returns `{ success: false, error:
+  "last_admin" }` instead of deleting them — an unrecoverable platform
+  lockout. Checked at approval time (the actual state-changing moment),
+  not at submission time — a lone admin can still submit a request.
+- **Self-service cancel is included** (`DELETE
+  /api/account-deletion-requests/[id]`, mirroring
+  `deleteSavedSearch`'s ownership-scoped-delete shape) even though the
+  owner's instruction didn't explicitly ask for it — a person changing
+  their mind before an admin ever reviews the request is the single
+  most likely real-world case, and it's a zero-risk, one-function
+  addition that avoids an avoidable support burden.
+- **Cascade scope on approval**: `User.deletedAt = now()` (already
+  enforced with zero further code by `getSessionUser`,
+  `src/modules/identity/session.ts:36` — this feature's core
+  enforcement point already existed, it simply never had a write path)
+  + revoke all sessions (reusing `setUserStatus`'s exact snippet) +
+  bulk soft-delete every non-deleted `Listing` the user owns (`status:
+  "REMOVED", deletedAt: now()`, the same terminal state
+  `adminRemoveListing` already uses, just bulked) + soft-delete their
+  `Store` if one exists. **Deliberately not touched**: `Order`,
+  `LedgerEntry`, `Report`, `Notification`, `Favorite`, `SavedSearch`
+  rows — these are historical/financial records that must survive
+  intact for audit and ledger integrity (CLAUDE.md Section 6); the
+  product requirement is only that the user can never log back in. No
+  search re-index is needed for the cascade — removal has never
+  required one anywhere else in this codebase (every search/listing/
+  storefront query already filters `deletedAt: null`).
+- **This codebase never hard-deletes a `User` row** — every
+  "deletion" here is the `deletedAt` soft-delete convention already
+  used for `Listing`/`Store`/`Category`. Account deletion follows the
+  same convention, preserving referential integrity for `Order`/
+  `LedgerEntry`/`AuditLog` rows that must keep pointing at a real (if
+  inaccessible) user record.
+- **One new `NotificationType`: `ACCOUNT_DELETION_REVIEWED`**, sent on
+  both `APPROVED` and `REJECTED` (mirrors `VERIFICATION_REVIEWED`'s
+  single-type-for-both-outcomes shape). On approval the in-app row
+  becomes unreachable once the account is locked out — an accepted,
+  honest consequence of this codebase's existing best-effort SMS/email
+  mirror, not a reason to special-case anything.
+
+### Critical files
+- `prisma/schema.prisma`
+- `src/modules/identity/account-deletion.ts` (new),
+  `src/modules/identity/service.ts`
+- `src/app/api/account-deletion-requests/route.ts` (new),
+  `src/app/api/account-deletion-requests/[id]/route.ts` (new),
+  `src/app/api/admin/account-deletion-requests/route.ts` (new),
+  `src/app/api/admin/account-deletion-requests/[id]/route.ts` (new)
+- `src/app/admin/account-deletion-requests/page.tsx` (new),
+  `AccountDeletionQueue.tsx` (new), `src/app/admin/layout.tsx`
+- `src/app/profile/page.tsx`, `src/app/profile/ProfileView.tsx`
+- `tests/identity/account-deletion.test.ts` (new),
+  `e2e/account-deletion-flow.spec.ts` (new)

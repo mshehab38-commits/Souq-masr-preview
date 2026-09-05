@@ -29,6 +29,7 @@ interface ProfileViewProps {
     businessName: string | null;
     createdAt: string;
   }[];
+  pendingDeletionRequest: { id: string } | null;
 }
 
 const STATUS_LABELS: Record<VerificationStatus, { label: string; tone: "amber" | "success" | "danger" }> = {
@@ -44,7 +45,7 @@ function csrfHeaders(): HeadersInit {
   };
 }
 
-export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
+export function ProfileView({ user, verificationRequests, pendingDeletionRequest }: ProfileViewProps) {
   const router = useRouter();
   const [name, setName] = useState(user.name ?? "");
   const [email, setEmail] = useState(user.email ?? "");
@@ -58,6 +59,12 @@ export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [submittingRequest, setSubmittingRequest] = useState(false);
   const [requests, setRequests] = useState(verificationRequests);
+
+  const [deletionReason, setDeletionReason] = useState("");
+  const [deletionRequest, setDeletionRequest] = useState(pendingDeletionRequest);
+  const [deletionError, setDeletionError] = useState<string | null>(null);
+  const [submittingDeletion, setSubmittingDeletion] = useState(false);
+  const [cancellingDeletion, setCancellingDeletion] = useState(false);
 
   async function handleSaveName(event: FormEvent) {
     event.preventDefault();
@@ -118,6 +125,44 @@ export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
       setNotes("");
     } finally {
       setSubmittingRequest(false);
+    }
+  }
+
+  async function handleRequestDeletion(event: FormEvent) {
+    event.preventDefault();
+    setDeletionError(null);
+    setSubmittingDeletion(true);
+    try {
+      const response = await fetch("/api/account-deletion-requests", {
+        method: "POST",
+        headers: csrfHeaders(),
+        body: JSON.stringify({ reason: deletionReason || undefined }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setDeletionError("حدث خطأ ما");
+        return;
+      }
+      setDeletionRequest({ id: data.request.id });
+    } finally {
+      setSubmittingDeletion(false);
+    }
+  }
+
+  async function handleCancelDeletion() {
+    if (!deletionRequest) return;
+    setCancellingDeletion(true);
+    try {
+      const response = await fetch(`/api/account-deletion-requests/${deletionRequest.id}`, {
+        method: "DELETE",
+        headers: csrfHeaders(),
+      });
+      if (response.ok) {
+        setDeletionRequest(null);
+        setDeletionReason("");
+      }
+    } finally {
+      setCancellingDeletion(false);
     }
   }
 
@@ -190,7 +235,7 @@ export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
       )}
 
       {requests.length > 0 && (
-        <Card>
+        <Card className="mb-6">
           <h2 className="font-cairo mb-3 text-lg font-bold text-neutral-900">طلبات التوثيق</h2>
           <ul className="flex flex-col gap-2">
             {requests.map((request) => (
@@ -202,6 +247,40 @@ export function ProfileView({ user, verificationRequests }: ProfileViewProps) {
           </ul>
         </Card>
       )}
+
+      <Card>
+        <h2 className="font-cairo mb-3 text-lg font-bold text-neutral-900">حذف الحساب</h2>
+        {deletionRequest ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-neutral-600">طلب حذف الحساب قيد المراجعة من قبل الإدارة</p>
+            <Button
+              variant="outline"
+              size="sm"
+              loading={cancellingDeletion}
+              onClick={handleCancelDeletion}
+              className="self-start"
+            >
+              إلغاء الطلب
+            </Button>
+          </div>
+        ) : (
+          <form onSubmit={handleRequestDeletion} className="flex flex-col gap-3">
+            <p className="text-sm text-neutral-600">
+              لا يمكنك حذف حسابك مباشرة — سيتم مراجعة طلبك من قبل الإدارة، وفي حالة الموافقة سيتم حذف حسابك وجميع
+              إعلاناتك ومتجرك بشكل نهائي.
+            </p>
+            <Input
+              label="سبب الحذف (اختياري)"
+              value={deletionReason}
+              onChange={(e) => setDeletionReason(e.target.value)}
+            />
+            {deletionError && <p className="text-sm text-danger">{deletionError}</p>}
+            <Button type="submit" variant="danger" loading={submittingDeletion} className="self-start">
+              حذف الحساب
+            </Button>
+          </form>
+        )}
+      </Card>
     </main>
   );
 }

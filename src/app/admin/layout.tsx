@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: "/admin/shipping", label: "شركات الشحن" },
   { href: "/admin/ledger", label: "الإيرادات" },
   { href: "/admin/audit-log", label: "سجل النشاط" },
+  { href: "/admin/account-deletion-requests", label: "طلبات حذف الحساب" },
   { href: "/admin/users", label: "المستخدمون" },
   { href: "/admin/reports", label: "البلاغات" },
   { href: "/admin/listings/pending-review", label: "إعلانات قيد المراجعة" },

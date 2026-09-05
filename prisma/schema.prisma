@@ -43,6 +43,7 @@ model User {
   listings             Listing[]
   sessions             Session[]
   verificationRequests VerificationRequest[]
+  accountDeletionRequests AccountDeletionRequest[]
   auditLogs            AuditLog[]            @relation("AuditActor")
   favorites            Favorite[]
   savedSearches        SavedSearch[]
@@ -131,6 +132,38 @@ model VerificationRequest {
   @@index([userId, createdAt])
   @@index([status, createdAt])
   @@map("verification_requests")
+}
+
+enum AccountDeletionRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// A dedicated model, not an extra VerificationRequestType value — the two
+// flows have completely different side effects on approval (verification
+// sets one field and maybe a role; deletion cascades across Listing/Store
+// and permanently locks the account) and different admin-queue semantics.
+// See docs/DECISIONS.md (Phase 34). A user can never delete their own
+// account directly — only submit a request; approval is admin-only
+// (reviewAccountDeletionRequest in src/modules/identity/account-deletion.ts).
+model AccountDeletionRequest {
+  id         String                       @id @default(cuid())
+  userId     String
+  user       User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status     AccountDeletionRequestStatus @default(PENDING)
+  reason     String?
+  reviewedBy String?
+  reviewedAt DateTime?
+  notes      String?
+  createdAt  DateTime                     @default(now())
+  updatedAt  DateTime                     @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("account_deletion_requests")
 }
 
 enum AuditActorType {
@@ -891,6 +924,7 @@ enum NotificationType {
   REPORT_RESOLVED
   VERIFICATION_REVIEWED
   SAVED_SEARCH_MATCH
+  ACCOUNT_DELETION_REVIEWED
 }
 
 // In-app row is always written. Since Phase 11/14, createNotification()
