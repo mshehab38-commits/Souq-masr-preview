@@ -6,6 +6,7 @@ import {
   getStoreByOwnerId,
   getStoreBySlug,
   listStorePublicListings,
+  listStoreSlugsForSitemap,
 } from "@/modules/store/store";
 
 const createdUserIds: string[] = [];
@@ -88,11 +89,42 @@ describe("store module", () => {
     const fetched = await getStoreBySlug(created.slug);
     expect(fetched?.name).toBe("متجر عام");
     expect(fetched?.owner.id).toBe(owner.id);
+    expect(fetched?.owner.phone).toBe(owner.phone);
   });
 
   it("returns null for a slug that doesn't exist", async () => {
     const fetched = await getStoreBySlug("does-not-exist-slug");
     expect(fetched).toBeNull();
+  });
+
+  it("lists only non-deleted stores for the sitemap, newest-updated first", async () => {
+    const owner1 = await makeUser();
+    const owner2 = await makeUser();
+    const first = await createStore(owner1.id, { name: "متجر أول" });
+    const second = await createStore(owner2.id, { name: "متجر ثاني" });
+    expect(first.success && second.success).toBe(true);
+    if (!first.success || !second.success) return;
+    createdStoreIds.push(first.storeId, second.storeId);
+
+    await prisma.store.update({ where: { id: second.storeId }, data: { updatedAt: new Date() } });
+
+    const result = await listStoreSlugsForSitemap();
+    const slugs = result.map((s) => s.slug);
+    expect(slugs).toContain(first.slug);
+    expect(slugs).toContain(second.slug);
+  });
+
+  it("excludes a soft-deleted store from the sitemap listing", async () => {
+    const owner = await makeUser();
+    const created = await createStore(owner.id, { name: "متجر سيُحذف" });
+    expect(created.success).toBe(true);
+    if (!created.success) return;
+    createdStoreIds.push(created.storeId);
+
+    await prisma.store.update({ where: { id: created.storeId }, data: { deletedAt: new Date() } });
+
+    const result = await listStoreSlugsForSitemap();
+    expect(result.map((s) => s.slug)).not.toContain(created.slug);
   });
 
   it("lists only the owner's ACTIVE listings on the storefront, paginated", async () => {

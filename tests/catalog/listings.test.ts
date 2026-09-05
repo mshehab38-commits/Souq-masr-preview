@@ -7,6 +7,7 @@ import {
   listListingsByOwner,
   listPendingReviewListings,
   decidePendingListing,
+  listActiveListingIdsForSitemap,
 } from "@/modules/catalog/listings";
 import { updatePlatformSettings } from "@/modules/settings/settings";
 
@@ -346,5 +347,40 @@ describe("updateListing", () => {
     const updated = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
     expect(updated.title).toBe("مباع - تعديل");
     expect(updated.status).toBe("SOLD");
+  });
+});
+
+describe("listActiveListingIdsForSitemap", () => {
+  afterEach(async () => {
+    await prisma.listing.deleteMany({ where: { ownerId: { in: createdUserIds } } });
+    await prisma.category.deleteMany({ where: { id: { in: createdCategoryIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    createdUserIds.length = 0;
+    createdCategoryIds.length = 0;
+  });
+
+  it("only includes ACTIVE, non-deleted listings", async () => {
+    const owner = await makeUser();
+    const category = await makeCategory();
+    const active = await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "نشط", status: "ACTIVE" },
+    });
+    await prisma.listing.create({
+      data: { ownerId: owner.id, categoryId: category.id, title: "مسودة", status: "DRAFT" },
+    });
+    await prisma.listing.create({
+      data: {
+        ownerId: owner.id,
+        categoryId: category.id,
+        title: "محذوف",
+        status: "REMOVED",
+        deletedAt: new Date(),
+      },
+    });
+
+    const result = await listActiveListingIdsForSitemap();
+    const ids = result.map((r) => r.id);
+    expect(ids).toContain(active.id);
+    expect(ids.length).toBeLessThanOrEqual(5000);
   });
 });

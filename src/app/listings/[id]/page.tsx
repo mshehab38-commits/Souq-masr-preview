@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "@/modules/identity/service";
@@ -10,6 +11,28 @@ import { Button } from "@/components/ui/Button";
 import { ListingDetailActions } from "./ListingDetailActions";
 import { ListingImageUploader } from "./ListingImageUploader";
 import { ReportButton } from "@/components/ReportButton";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+  const user = await getCurrentUser();
+  const listing = await getListingById(id, user?.id, user?.role);
+  if (!listing) {
+    return { title: "الإعلان غير متاح | سوق مصر" };
+  }
+
+  const description = listing.description
+    ? listing.description.slice(0, 160)
+    : `${listing.title} في ${listing.category.nameAr}${listing.governorate ? " - " + listing.governorate.nameAr : ""} على سوق مصر`;
+
+  return {
+    title: `${listing.title} - ${listing.category.nameAr} | سوق مصر`,
+    description,
+  };
+}
 
 export default async function ListingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

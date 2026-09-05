@@ -243,6 +243,22 @@ export async function updateListing(
   return { success: true };
 }
 
+// Google's own sitemap limit is 50,000 URLs; 5,000 is a generous,
+// safely-bounded technical default for this project's actual scale — not
+// a business decision. Ordered newest-updated-first so the most relevant
+// content survives if the cap is ever hit before a proper sitemap-index
+// scheme is built.
+const SITEMAP_LISTING_LIMIT = 5000;
+
+export async function listActiveListingIdsForSitemap() {
+  return prisma.listing.findMany({
+    where: { status: "ACTIVE", deletedAt: null },
+    select: { id: true, updatedAt: true },
+    orderBy: { updatedAt: "desc" },
+    take: SITEMAP_LISTING_LIMIT,
+  });
+}
+
 // Statuses visible to a non-owner viewer. DRAFT/PENDING_REVIEW/REJECTED
 // are deliberately excluded — a listing under moderation or never
 // published shouldn't be fetchable by anyone who happens to know its ID.

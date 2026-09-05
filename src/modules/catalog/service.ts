@@ -34,6 +34,7 @@ export {
   checkBulkActionRateLimit,
   renewListing,
   getSellerStats,
+  listActiveListingIdsForSitemap,
   LISTING_LIFETIME_MS,
 } from "./listings";
 export type {

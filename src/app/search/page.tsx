@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import Image from "next/image";
 import { getSearchProvider, resolveSearchFilters } from "@/modules/search/service";
@@ -19,6 +20,15 @@ interface SearchPageProps {
     sort?: string;
     page?: string;
   }>;
+}
+
+export async function generateMetadata({ searchParams }: SearchPageProps): Promise<Metadata> {
+  const { q } = await searchParams;
+  const title = q ? `نتائج البحث: ${q} | سوق مصر` : "تصفح الإعلانات | سوق مصر";
+  const description = q
+    ? `نتائج البحث عن "${q}" في إعلانات سوق مصر المبوبة`
+    : "تصفح آلاف الإعلانات المبوبة في سوق مصر — سيارات، عقارات، إلكترونيات وأكثر";
+  return { title, description };
 }
 
 // A positive, finite number, or undefined for anything else (missing,

@@ -70,7 +70,21 @@ export async function getStoreByOwnerId(ownerId: string) {
 export async function getStoreBySlug(slug: string) {
   return prisma.store.findFirst({
     where: { slug, deletedAt: null },
-    include: { owner: { select: { id: true, name: true, commerceVerifiedAt: true } } },
+    include: { owner: { select: { id: true, name: true, phone: true, commerceVerifiedAt: true } } },
+  });
+}
+
+// Same 5,000-URL cap as listActiveListingIdsForSitemap, same rationale
+// (Google's sitemap limit is 50,000; this is a generous technical
+// default for this project's actual scale, not a business decision).
+const SITEMAP_STORE_LIMIT = 5000;
+
+export async function listStoreSlugsForSitemap() {
+  return prisma.store.findMany({
+    where: { deletedAt: null },
+    select: { slug: true, updatedAt: true },
+    orderBy: { updatedAt: "desc" },
+    take: SITEMAP_STORE_LIMIT,
   });
 }
 
