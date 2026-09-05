@@ -2145,3 +2145,92 @@ once an admin approves it.**
 - `src/app/profile/page.tsx`, `src/app/profile/ProfileView.tsx`
 - `tests/identity/account-deletion.test.ts` (new),
   `e2e/account-deletion-flow.spec.ts` (new)
+
+## Phase 34 implementation gate: post-shipment audit and a real concurrency fix
+
+Immediately after Phase 34 merged, the owner required a four-point
+engineering audit against the shipped code before treating the phase
+as valid. Three points held up; one did not and was fixed the same
+session. Findings, in the order the gate asked for them:
+
+**1. Concurrency/atomicity of `reviewAccountDeletionRequest` — FAILED,
+now fixed.** The shipped version did exactly the flagged anti-pattern:
+`findUnique` → check `status !== "PENDING"` → a separate
+`tx.accountDeletionRequest.update({ where: { id } })` with no status
+guard on the write itself. Two concurrent approvals for the same
+request could both pass the stale read and both execute the cascade,
+producing duplicate audit-log rows, duplicate notifications, and
+(in the pathological case) two admins racing a decision with no
+defined winner. Fixed by switching the claim to
+`tx.accountDeletionRequest.updateMany({ where: { id, status: "PENDING" }, data: {...} })`
+and checking `count === 0` — the exact atomic-conditional-update
+pattern already established in
+`src/modules/orders/transitions.ts:66-70` for order-status races.
+Postgres serializes concurrent `UPDATE`s against the same row via
+row-level locking, then re-evaluates the `WHERE` against the
+now-committed data, so the loser's claim genuinely cannot match once
+the winner commits. The last-admin count check was also moved inside
+the same transaction (reading via `tx`, not the pre-transaction
+`prisma`), and a refused last-admin approval now aborts by throwing a
+sentinel error inside the transaction callback — not merely returning
+early — so Prisma rolls back the claim's status write too; a refused
+approval leaves the request genuinely `PENDING`, never silently marked
+`APPROVED`. New tests in `tests/identity/account-deletion.test.ts`
+fire two concurrent `reviewAccountDeletionRequest` calls for the same
+request (both `APPROVED`, and one `APPROVED`/one `REJECTED`) and
+assert exactly one wins, the loser gets `already_reviewed`, and the
+audit log/notification counts are exactly 1 — run five times
+consecutively during development to confirm non-flakiness, matching
+this codebase's established diligence for concurrency tests (Phase
+15/16).
+- **2. `AccountDeletionRequest.user`'s `onDelete: Cascade` — clean,
+  documented.** Confirmed via `grep -rn "\.user\.delete(" src/` that
+  **zero** production code paths ever hard-delete a `User` row —
+  every "deletion" in this codebase is the `deletedAt` convention.
+  Beyond that application-level discipline, the schema itself also
+  makes hard deletion of any user with real activity impossible at
+  the database level: `Listing.owner`, `Order.buyer`, `Order.seller`,
+  and `SellerPayout.seller` are all `onDelete: Restrict` — Postgres
+  refuses the delete outright if any such row exists for that user. A
+  brand-new user with zero listings/orders has no `Restrict`-guarded
+  row, so this DB-level guarantee isn't universal — but the real
+  defense is that the running application never issues
+  `prisma.user.delete()` at all, for any user. `onDelete: Cascade` on
+  `AccountDeletionRequest.user` matches the identical, already-shipped
+  choice on `VerificationRequest`, `Favorite`, `SavedSearch`,
+  `Notification`, and `Session` — kept consistent with that existing
+  convention rather than inventing a different policy for one new
+  model, per the standing "reuse, don't invent" discipline.
+- **3. Listing cascade (`SOLD` → `REMOVED`) impact — clean, no new
+  risk introduced.** Traced every consumer named in the gate:
+  `Order.productPrice`/`fulfillmentMode`/`shippingFee` are already
+  snapshotted onto the `Order` row at checkout time and never re-read
+  from `Listing` live (confirmed by the model's own doc comment);
+  `listOrdersForBuyer`/`listOrdersForSeller`
+  (`src/modules/orders/orders.ts:25,44`) filter only on
+  `buyerId`/`sellerId`, with no filter on the joined listing's
+  `deletedAt`/`status` at all, so order history renders identically
+  regardless of the listing's later state; `getSellerStats`
+  (`src/modules/catalog/listings.ts:326`) and the expiry sweep
+  (`src/jobs/listing-expiry.ts:9`) both already filter
+  `deletedAt: null`/`status: "ACTIVE"`, the same filters every other
+  soft-delete path in this codebase already relies on. Critically,
+  `status: "REMOVED", deletedAt: now()` is not new state introduced by
+  this phase — it's the exact terminal state `softDeleteListing`
+  already produces today for **any** listing a seller deletes
+  individually, `SOLD` included, with zero status restriction
+  (confirmed extensively during Phase 32). The account-deletion
+  cascade does at bulk scale exactly what a seller could already do
+  one listing at a time; it introduces no new architectural risk.
+- **4. `ACCOUNT_DELETION_REVIEWED` on `APPROVED` — clean, documented
+  as an accepted consequence, not fixed.** The in-app `Notification`
+  row becomes unreachable the instant `deletedAt` is set (the very
+  next request locks the account), so an approved user can never see
+  it in-app. This exactly mirrors `VERIFICATION_REVIEWED`'s existing,
+  already-shipped design: `createNotification` always attempts a
+  best-effort SMS/email mirror in the same call regardless of whether
+  the in-app row will ever be read, so the phone/email notification
+  still reaches the user off-platform even though the in-app one
+  cannot. No new notification-delivery architecture was introduced —
+  this is the same accepted trade-off already made for every
+  notification type, not a gap specific to account deletion.

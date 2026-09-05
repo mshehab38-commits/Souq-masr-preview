@@ -187,7 +187,7 @@ tasks to be framed across disciplines).
 | 31 | Built the `/admin/audit-log` viewer — `AuditLog` was completely write-only until now; new `listAuditLogs()` (`src/lib/audit.ts`), `GET /api/admin/audit-log`, and an admin page with action/targetType filters + pagination | 56fca86 | Done |
 | 32 | Owner clarified a "user deletion" question was really about listing management. Verified delete already fully works; built the missing `/listings/[id]/edit` page — `updateListing`/`PATCH /api/listings/[id]` were fully built and tested-adjacent but had zero UI consumer | a04627c | Done |
 | 33 | Fresh OODA review (two Explore agents, product + technical angles). Built SEO essentials (`robots.ts`, `sitemap.ts`, per-page `generateMetadata` for search/listing/store) and fixed a real live gap: the store page had no way to contact the seller at all | d523b2a | Done |
-| 34 | Owner resolved the long-standing account-deletion OWNER DECISION: users can never delete their own account directly, only submit a request an admin must approve. Built `AccountDeletionRequest` submit/cancel/admin-review flow with a full cascade (locks the account, revokes sessions, soft-deletes listings + store) | this session | **Done** |
+| 34 | Owner resolved the long-standing account-deletion OWNER DECISION: users can never delete their own account directly, only submit a request an admin must approve. Built `AccountDeletionRequest` submit/cancel/admin-review flow with a full cascade (locks the account, revokes sessions, soft-deletes listings + store). Owner's post-merge four-point implementation gate found and this session fixed one real bug: `reviewAccountDeletionRequest` lacked concurrency-safe atomic approval | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1330,22 +1330,57 @@ rationale. No financial/business decision involved — pure audit-trail
 completeness, no behavior change visible to any admin beyond richer
 `AuditLog` rows.
 
-## Tests & Results (Phase 34, all green)
+## Phase 34 implementation gate: post-merge audit (this session)
+
+The owner required a four-point engineering audit against the
+already-shipped Phase 34 code before treating it as valid: (1)
+concurrency/atomicity of the approval path, (2) the
+`AccountDeletionRequest.user` FK's `onDelete: Cascade` against the
+hard-delete-forbidden convention, (3) whether cascading `SOLD`
+listings to `REMOVED` breaks any consumer (orders, seller stats,
+search, expiry), (4) whether the `APPROVED` in-app notification has a
+meaningful delivery path. Full evidence trail in `docs/DECISIONS.md`'s
+addendum entry. Outcome: **checks 2–4 were clean** (Cascade matches
+every sibling model's existing choice and is safe because the
+application never hard-deletes `User`, reinforced by `Restrict` FKs on
+`Listing.owner`/`Order.buyer`/`Order.seller`/`SellerPayout.seller`;
+the `SOLD`→`REMOVED` cascade is the exact same terminal state
+`softDeleteListing` already produces per-listing with zero status
+restriction, and every consumer checked already filters
+`deletedAt`/`status` correctly; the notification mirrors
+`VERIFICATION_REVIEWED`'s already-accepted SMS/email-still-fires
+trade-off). **Check 1 found a real bug**: `reviewAccountDeletionRequest`
+shipped with a read-then-separate-unconditional-update race — two
+concurrent approvals for the same request could both execute the
+cascade, duplicating audit-log rows and notifications. Fixed by
+switching to the atomic `updateMany({ where: { id, status: "PENDING" } })`
+claim pattern already established in
+`src/modules/orders/transitions.ts`, with the last-admin check moved
+inside the same transaction and a refused approval now rolling back
+via a thrown sentinel error (not a silent early return) so it never
+leaves the request wrongly marked decided.
+
+## Tests & Results (Phase 34, all green — includes the concurrency fix above)
 
 - `npx prisma migrate dev` (+ bare re-check) — clean, one new migration
   (`add_account_deletion_requests`).
 - `npm run typecheck` — clean.
 - `npm run lint` — clean.
 - `npm run boundaries` — no violations (241 modules, 876 dependencies).
-- `npm test` — **424/424 unit tests passing** across 50 files. New this
-  phase: `tests/identity/account-deletion.test.ts` (10 tests) covering
+- `npm test` — **426/426 unit tests passing** across 50 files. New this
+  phase: `tests/identity/account-deletion.test.ts` (12 tests) covering
   submit/dedupe, self-cancel (including refusing another user's
   request), the admin queue's default PENDING/oldest-first ordering,
   REJECTED leaving the account untouched, APPROVED's full cascade
   (`deletedAt` set, sessions revoked, listings soft-deleted regardless
   of prior status, store soft-deleted), refusing to re-review an
-  already-decided request, and both last-admin-guard cases (refuses
-  when sole admin, allows when another admin remains).
+  already-decided request, both last-admin-guard cases (refuses when
+  sole admin, allows when another admin remains), and **two concurrency
+  tests** (two concurrent `APPROVED` calls for the same request, and
+  one `APPROVED`/one `REJECTED` racing) each asserting exactly one call
+  wins, the loser gets `already_reviewed`, and the audit-log/
+  notification counts stay at exactly 1 — run 5 times consecutively
+  during development to confirm non-flakiness.
 - `npx playwright test` — **12/12 e2e specs passing**, including new
   `e2e/account-deletion-flow.spec.ts`: a seller submits a deletion
   request from `/profile`, an admin (in a separate browser context so
