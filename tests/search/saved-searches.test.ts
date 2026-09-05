@@ -289,4 +289,59 @@ describe("notifyMatchingSavedSearches", () => {
       await prisma.notification.count({ where: { userId: buyer.id, type: "SAVED_SEARCH_MATCH" } }),
     ).toBe(2);
   });
+
+  it("finds all real matches and excludes all non-matches when the drain loop crosses multiple pages", async () => {
+    const seller = await makeUser();
+    const category = await makeCategory();
+    const otherCategory = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "إعلان", status: "ACTIVE" },
+    });
+
+    // 5 saved searches across 3 users, forced into 3 pages by a batchSize
+    // of 2 — a mix of matching (category matches) and non-matching
+    // (wrong category) queries, spread across page boundaries by
+    // insertion order.
+    const matchingBuyerA = await makeUser();
+    const nonMatchingBuyer = await makeUser();
+    const matchingBuyerB = await makeUser();
+    await createSavedSearch(matchingBuyerA.id, "يطابق أ", { category: category.slug });
+    await createSavedSearch(nonMatchingBuyer.id, "لا يطابق ١", { category: otherCategory.slug });
+    await createSavedSearch(matchingBuyerB.id, "يطابق ب", { category: category.slug });
+    await createSavedSearch(nonMatchingBuyer.id, "لا يطابق ٢", { category: otherCategory.slug });
+    await createSavedSearch(nonMatchingBuyer.id, "لا يطابق ٣", { category: otherCategory.slug });
+
+    const notifiedCount = await notifyMatchingSavedSearches(listing.id, 2);
+    expect(notifiedCount).toBe(2);
+
+    const notifiedUserIds = (
+      await prisma.notification.findMany({
+        where: { userId: { in: [matchingBuyerA.id, matchingBuyerB.id, nonMatchingBuyer.id] }, type: "SAVED_SEARCH_MATCH" },
+        select: { userId: true },
+      })
+    ).map((n) => n.userId);
+    expect(new Set(notifiedUserIds)).toEqual(new Set([matchingBuyerA.id, matchingBuyerB.id]));
+  });
+
+  it("still dedupes to one notification per user when their matching saved searches land on different pages", async () => {
+    const seller = await makeUser();
+    const buyer = await makeUser();
+    const otherUser = await makeUser();
+    const category = await makeCategory();
+    const listing = await prisma.listing.create({
+      data: { ownerId: seller.id, categoryId: category.id, title: "إعلان", status: "ACTIVE" },
+    });
+
+    // Two of the buyer's own saved searches, separated by another user's
+    // row so they land on different pages under a batchSize of 1.
+    await createSavedSearch(buyer.id, "بحث أول للمشتري", { category: category.slug });
+    await createSavedSearch(otherUser.id, "بحث غير مطابق", { category: "لا-يوجد-قسم-بهذا-الاسم" });
+    await createSavedSearch(buyer.id, "بحث ثاني للمشتري", { category: category.slug });
+
+    const notifiedCount = await notifyMatchingSavedSearches(listing.id, 1);
+    expect(notifiedCount).toBe(1);
+
+    const count = await prisma.notification.count({ where: { userId: buyer.id, type: "SAVED_SEARCH_MATCH" } });
+    expect(count).toBe(1);
+  });
 });

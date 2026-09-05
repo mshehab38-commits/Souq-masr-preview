@@ -107,6 +107,13 @@ async function claimSavedSearchNotification(userId: string, listingId: string): 
   }
 }
 
+// A generous technical default, not a business decision — bounds how many
+// SavedSearch rows are held in memory at once (see the drain loop below),
+// not how many total rows can ever be scanned. Overridable per-call only
+// for tests, which use a tiny value to exercise the multi-page path
+// without needing hundreds of real rows.
+const SAVED_SEARCH_BATCH_SIZE = 500;
+
 // Called from the search-indexing job (src/jobs/search-indexing.ts) once a
 // new listing's searchText is available — not from createListing directly,
 // so this stays off the synchronous create-listing request path, matching
@@ -115,7 +122,10 @@ async function claimSavedSearchNotification(userId: string, listingId: string): 
 // every matching user is claimed via SavedSearchNotification before being
 // notified — one notification per matching user per listing, ever, not
 // just "per matching saved search" within a single call.
-export async function notifyMatchingSavedSearches(listingId: string): Promise<number> {
+export async function notifyMatchingSavedSearches(
+  listingId: string,
+  batchSize: number = SAVED_SEARCH_BATCH_SIZE,
+): Promise<number> {
   const listing = await prisma.listing.findUnique({
     where: { id: listingId },
     select: {
@@ -140,14 +150,34 @@ export async function notifyMatchingSavedSearches(listingId: string): Promise<nu
     searchText: listing.searchText,
   };
 
-  const savedSearches = await prisma.savedSearch.findMany();
+  // Drains the entire SavedSearch table in bounded pages instead of one
+  // unbounded findMany() — this table has no index usable for filtering by
+  // listing attributes (query is a plain, unindexed Json column, and every
+  // field within it is optional — a missing filter matches everything, so
+  // it can't be pushed into a SQL WHERE without a JSON-path rewrite that
+  // has no precedent in this codebase and no current-scale evidence it's
+  // needed; see docs/DECISIONS.md). Cursor-paginating on `id` bounds memory
+  // to one batch at a time regardless of table size, matching this
+  // codebase's own "every list query must be bounded" convention.
   const matchedUserIds = new Map<string, string>(); // userId -> saved search name
+  let cursorId: string | undefined;
+  for (;;) {
+    const batch = await prisma.savedSearch.findMany({
+      take: batchSize,
+      orderBy: { id: "asc" },
+      ...(cursorId ? { skip: 1, cursor: { id: cursorId } } : {}),
+    });
+    if (batch.length === 0) break;
 
-  for (const saved of savedSearches) {
-    if (matchedUserIds.has(saved.userId)) continue;
-    if (matchesListing(saved.query as RawSearchParams, matchable)) {
-      matchedUserIds.set(saved.userId, saved.name);
+    for (const saved of batch) {
+      if (matchedUserIds.has(saved.userId)) continue;
+      if (matchesListing(saved.query as RawSearchParams, matchable)) {
+        matchedUserIds.set(saved.userId, saved.name);
+      }
     }
+
+    cursorId = batch[batch.length - 1]!.id;
+    if (batch.length < batchSize) break;
   }
 
   const claims = await Promise.all(
