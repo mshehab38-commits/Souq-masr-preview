@@ -104,6 +104,14 @@ export type ReviewAccountDeletionRequestResult =
 // deleting the sole remaining ADMIN account (same principle as
 // setUserRole's last-admin guard) — an unrecoverable platform lockout,
 // checked at approval time since a lone admin can still submit a request.
+// Sentinel errors used only to trigger a clean transaction rollback from
+// inside prisma.$transaction's callback (throwing aborts every write the
+// callback made, including the claim below) — never leaked past this
+// function. See the concurrency note on the updateMany claim for why a
+// plain "check then separate transaction" shape is not used here.
+class ClaimLostError extends Error {}
+class LastAdminError extends Error {}
+
 export async function reviewAccountDeletionRequest(
   requestId: string,
   actorId: string,
@@ -117,40 +125,64 @@ export async function reviewAccountDeletionRequest(
   if (!request) return { success: false, error: "not_found" };
   if (request.status !== "PENDING") return { success: false, error: "already_reviewed" };
 
-  if (decision === "APPROVED" && request.user.role === "ADMIN") {
-    const otherAdmins = await prisma.user.count({
-      where: { role: "ADMIN", deletedAt: null, id: { not: request.userId } },
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Guarded by the status we actually read above, not just the id —
+      // two concurrent review calls for the same request (an admin
+      // double-click, a network retry, two admins racing) can both pass
+      // the PENDING check above against the same stale read, but only one
+      // can win this conditional update: the loser's WHERE no longer
+      // matches once the winner's transaction commits (Postgres serializes
+      // concurrent UPDATEs against the same row via row-level locking,
+      // then re-evaluates WHERE against the now-committed data). Mirrors
+      // the exact pattern src/modules/orders/transitions.ts already uses
+      // for order-status races. This also makes the cascade below
+      // naturally idempotent — a duplicate approval can never soft-delete
+      // listings/store or revoke sessions twice, or record a duplicate
+      // audit log entry or notification, since only the transaction that
+      // wins the claim ever reaches those statements.
+      const claim = await tx.accountDeletionRequest.updateMany({
+        where: { id: requestId, status: "PENDING" },
+        data: {
+          status: decision,
+          reviewedBy: actorId,
+          reviewedAt: new Date(),
+          notes: notes ?? request.notes,
+        },
+      });
+      if (claim.count === 0) throw new ClaimLostError();
+
+      if (decision === "APPROVED") {
+        // Re-checked here, inside the same transaction that won the claim
+        // above, not just from the pre-fetch — throwing (not returning)
+        // guarantees the claim's status write above is rolled back too, so
+        // a refused last-admin approval leaves the request genuinely
+        // untouched (still PENDING), not silently marked APPROVED.
+        const otherAdmins = await tx.user.count({
+          where: { role: "ADMIN", deletedAt: null, id: { not: request.userId } },
+        });
+        if (request.user.role === "ADMIN" && otherAdmins === 0) throw new LastAdminError();
+
+        await tx.user.update({ where: { id: request.userId }, data: { deletedAt: new Date() } });
+        await tx.session.updateMany({
+          where: { userId: request.userId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+        await tx.listing.updateMany({
+          where: { ownerId: request.userId, deletedAt: null },
+          data: { status: "REMOVED", deletedAt: new Date() },
+        });
+        await tx.store.updateMany({
+          where: { ownerId: request.userId, deletedAt: null },
+          data: { deletedAt: new Date() },
+        });
+      }
     });
-    if (otherAdmins === 0) return { success: false, error: "last_admin" };
+  } catch (error) {
+    if (error instanceof ClaimLostError) return { success: false, error: "already_reviewed" };
+    if (error instanceof LastAdminError) return { success: false, error: "last_admin" };
+    throw error;
   }
-
-  await prisma.$transaction(async (tx) => {
-    await tx.accountDeletionRequest.update({
-      where: { id: requestId },
-      data: {
-        status: decision,
-        reviewedBy: actorId,
-        reviewedAt: new Date(),
-        notes: notes ?? request.notes,
-      },
-    });
-
-    if (decision === "APPROVED") {
-      await tx.user.update({ where: { id: request.userId }, data: { deletedAt: new Date() } });
-      await tx.session.updateMany({
-        where: { userId: request.userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
-      await tx.listing.updateMany({
-        where: { ownerId: request.userId, deletedAt: null },
-        data: { status: "REMOVED", deletedAt: new Date() },
-      });
-      await tx.store.updateMany({
-        where: { ownerId: request.userId, deletedAt: null },
-        data: { deletedAt: new Date() },
-      });
-    }
-  });
 
   await recordAudit({
     actorId,

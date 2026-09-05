@@ -142,6 +142,73 @@ describe("account deletion requests", () => {
     expect(store.deletedAt).not.toBeNull();
   });
 
+  it("under two concurrent APPROVE calls for the same request, exactly one succeeds and side effects are not duplicated", async () => {
+    const admin = await makeUser({ role: "ADMIN" });
+    const user = await makeUser();
+    const category = await makeCategory();
+    await createSession(user.id, {});
+    await prisma.listing.create({
+      data: { ownerId: user.id, categoryId: category.id, title: "نشط", status: "ACTIVE" },
+    });
+    const created = await submitAccountDeletionRequest(user.id);
+
+    const [resultA, resultB] = await Promise.all([
+      reviewAccountDeletionRequest(created.request.id, admin.id, "APPROVED"),
+      reviewAccountDeletionRequest(created.request.id, admin.id, "APPROVED"),
+    ]);
+
+    const results = [resultA, resultB];
+    const wins = results.filter((r) => r.success);
+    const losses = results.filter((r) => !r.success);
+    expect(wins).toHaveLength(1);
+    expect(losses).toHaveLength(1);
+    expect(losses[0]).toEqual({ success: false, error: "already_reviewed" });
+
+    const request = await prisma.accountDeletionRequest.findUniqueOrThrow({ where: { id: created.request.id } });
+    expect(request.status).toBe("APPROVED");
+
+    const updatedUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(updatedUser.deletedAt).not.toBeNull();
+
+    const listings = await prisma.listing.findMany({ where: { ownerId: user.id } });
+    expect(listings).toHaveLength(1);
+    expect(listings[0]?.status).toBe("REMOVED");
+
+    const auditCount = await prisma.auditLog.count({
+      where: { action: "admin.account_deletion.approve", targetId: user.id },
+    });
+    expect(auditCount).toBe(1);
+
+    const notificationCount = await prisma.notification.count({
+      where: { userId: user.id, type: "ACCOUNT_DELETION_REVIEWED" },
+    });
+    expect(notificationCount).toBe(1);
+  });
+
+  it("under two concurrent calls where one is REJECT and one is APPROVE, exactly one wins and the account state matches only the winner", async () => {
+    const admin = await makeUser({ role: "ADMIN" });
+    const user = await makeUser();
+    const created = await submitAccountDeletionRequest(user.id);
+
+    const [resultA, resultB] = await Promise.all([
+      reviewAccountDeletionRequest(created.request.id, admin.id, "APPROVED"),
+      reviewAccountDeletionRequest(created.request.id, admin.id, "REJECTED"),
+    ]);
+
+    const results = [resultA, resultB];
+    const wins = results.filter((r) => r.success);
+    expect(wins).toHaveLength(1);
+
+    const request = await prisma.accountDeletionRequest.findUniqueOrThrow({ where: { id: created.request.id } });
+    const updatedUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    if (request.status === "APPROVED") {
+      expect(updatedUser.deletedAt).not.toBeNull();
+    } else {
+      expect(request.status).toBe("REJECTED");
+      expect(updatedUser.deletedAt).toBeNull();
+    }
+  });
+
   it("refuses to re-review an already-decided request", async () => {
     const admin = await makeUser({ role: "ADMIN" });
     const user = await makeUser();
