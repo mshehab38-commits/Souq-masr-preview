@@ -185,7 +185,8 @@ tasks to be framed across disciplines).
 | 29 | Fresh OODA review (not another rote audit) found and closed a real gap: zero direct unit-test coverage on the session/CSRF/RBAC core (`session.ts`/`rbac.ts`) — including the Phase 6 banned/suspended-session-invalidation claim, which had no regression test behind it | 40a0778 | Done |
 | 30 | Built the `/search` price-range filter UI (Phase 29's recommended next action) — backend (`SearchFilters`, `resolveSearchFilters`, `PostgresSearchProvider`, `GET /api/search`, saved-search matching) already fully supported it; only the page's form was missing it | aca275e | Done |
 | 31 | Built the `/admin/audit-log` viewer — `AuditLog` was completely write-only until now; new `listAuditLogs()` (`src/lib/audit.ts`), `GET /api/admin/audit-log`, and an admin page with action/targetType filters + pagination | 56fca86 | Done |
-| 32 | Owner clarified a "user deletion" question was really about listing management. Verified delete already fully works; built the missing `/listings/[id]/edit` page — `updateListing`/`PATCH /api/listings/[id]` were fully built and tested-adjacent but had zero UI consumer | this session | **Done** |
+| 32 | Owner clarified a "user deletion" question was really about listing management. Verified delete already fully works; built the missing `/listings/[id]/edit` page — `updateListing`/`PATCH /api/listings/[id]` were fully built and tested-adjacent but had zero UI consumer | a04627c | Done |
+| 33 | Fresh OODA review (two Explore agents, product + technical angles). Built SEO essentials (`robots.ts`, `sitemap.ts`, per-page `generateMetadata` for search/listing/store) and fixed a real live gap: the store page had no way to contact the seller at all | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1073,6 +1074,38 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
+## What Was Completed in Phase 33
+
+The owner asked for a fresh OODA review rather than another rote audit.
+Two read-only Explore agents investigated angles this session's prior
+20+ audit rounds never covered — product-feature gaps against a
+Haraj-style classifieds marketplace, and technical gaps (image
+optimization, caching, pagination completeness, accessibility, stale
+TODOs, test coverage). Two findings were confirmed directly (not just
+trusted from the agents) and selected as this phase's scope, kept tight
+enough to complete in one clean pass:
+
+- **SEO was entirely absent** — new `src/app/robots.ts` (disallows
+  exactly the routes that already require a session) and
+  `src/app/sitemap.ts` (capped at 5,000 URLs per entity — listings,
+  stores — ordered newest-updated-first, `revalidate = 3600` so new
+  content appears without a redeploy), plus `generateMetadata` on
+  `/search`, `/listings/[id]`, and `/store/[slug]` built from each
+  page's own data instead of the root layout's one fixed title/
+  description for every page.
+- **The store page had no way to contact the seller at all** — added
+  the same WhatsApp deep-link pattern already used on the listing
+  detail page; required widening `getStoreBySlug`'s `owner` select to
+  include `phone`.
+
+Other findings from this review (unbounded `notifyMatchingSavedSearches`
+query, no listing-expiry notification, missing block/mute, a
+`NotificationBell` accessibility gap, several zero-coverage catalog
+functions, no fuzzy-search test) are real but deliberately deferred —
+see Known Issues below and `docs/DECISIONS.md`'s Phase 33 entry for the
+full evidence. Seller ratings were investigated and confirmed **not**
+a gap (parity with Haraj, the stated reference product).
+
 ## What Was Completed in Phase 32
 
 The owner's request ("المستخدم يقدر يحذف اعلانات من حسابه سواء قديمه او
@@ -1263,6 +1296,33 @@ already sufficient). See `docs/DECISIONS.md`'s Phase 28 entry for full
 rationale. No financial/business decision involved — pure audit-trail
 completeness, no behavior change visible to any admin beyond richer
 `AuditLog` rows.
+
+## Tests & Results (Phase 33, all green)
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (234 modules, 848 dependencies).
+- `npm test` — **414/414 unit tests passing** across 49 files. New this
+  phase: `listActiveListingIdsForSitemap` test in
+  `tests/catalog/listings.test.ts` (ACTIVE/non-deleted only, cap
+  respected); two `listStoreSlugsForSitemap` tests plus a
+  `getStoreBySlug` phone-select regression assertion in
+  `tests/store/store.test.ts`.
+- `npx playwright test` — **11/11 e2e specs passing**, including an
+  extended `e2e/store-management-flow.spec.ts`: a non-owner visitor
+  sees a working `https://wa.me/...` contact link on the storefront
+  (checked last in the flow, after the seller's own session, to avoid
+  re-triggering the real 60s per-phone OTP request cooldown with a
+  second login). (Two unrelated specs failed on the first full run
+  from OTP IP-rate-limit exhaustion after many logins in one suite — a
+  known, pre-existing environment artifact, not a regression; clearing
+  the `otp:ip-window:127.0.0.1` Redis key and re-running confirmed both
+  pass.)
+- `npm run build` — clean; `/robots.txt` and `/sitemap.xml` appear as
+  generated static routes, with `/sitemap.xml` showing a real `1h`
+  revalidate window (caught by inspecting the build output directly —
+  the route would otherwise have baked in at build time with no
+  refresh until the next deploy).
 
 ## Tests & Results (Phase 32, all green)
 
@@ -1646,6 +1706,39 @@ completeness, no behavior change visible to any admin beyond richer
 
 ### Deferred (not bugs — explicit scope decisions)
 
+- **Six findings from Phase 33's fresh OODA review, real but
+  deliberately not implemented this phase** (kept the phase completable
+  in one clean pass — see `docs/DECISIONS.md`'s Phase 33 entry for the
+  full evidence trail):
+  - `notifyMatchingSavedSearches` (`src/modules/search/saved-searches.ts:143`)
+    loads the entire `SavedSearch` table with no `where`/`take` on every
+    single listing create/edit — real technical debt (the same
+    unbounded-query class Phases 17/18/20 fixed elsewhere, missed here
+    because it's a background-job internal query, not an API-facing
+    "list my own data" endpoint), but no evidence of current pain at
+    this project's actual scale. Proper fix needs its own focused pass
+    (batching, or pushing simple filters into SQL) rather than being
+    bolted onto an unrelated phase.
+  - No proactive notification when a listing expires — the expiry sweep
+    silently flips status with no `NotificationType` for it. A seller
+    only finds out by checking `/listings/mine`.
+  - User blocking/muting still doesn't exist (flagged absent since
+    Phase 6, still true).
+  - `NotificationBell`'s dropdown lacks `aria-expanded`/`role="menu"`/
+    Escape-to-close — real but low-severity; contents stay
+    keyboard-reachable via normal tab order.
+  - Zero direct test coverage on `toggleFavorite`, `confirmImageUpload`/
+    `deleteListingImage`, `uploadStoreBranding`, `softDeleteListing`,
+    `markListingAsSold`, `incrementListingViewCount`, `getSellerStats`
+    — a safe, pure-test-writing candidate for a dedicated future phase
+    (matching the Phase 29 precedent).
+  - No test proves Arabic fuzzy/typo-tolerant search matching — the
+    `word_similarity` implementation itself is correct and already
+    shipped (confirmed via `postgres-provider.ts:101,109`); only the
+    test coverage for that specific behavior is missing.
+  - Seller ratings/reviews were investigated and confirmed **not** a
+    gap: Haraj itself has no seller-rating system, so their absence is
+    parity with the stated reference product, not an oversight.
 - **Five lower-severity unrated endpoints from the Phase 21
   rate-limiting audit, not fixed**: `POST /api/listings/[id]/favorite`
   (a cheap toggle bounded to one row per user/listing — a DB-load
@@ -2527,24 +2620,31 @@ None.
 
 ## Exact Next Action
 
-**All three findings from Phase 29's review are now resolved or
-correctly deferred.** Phase 30 built the `/search` price-range filter;
-Phase 31 built the `/admin/audit-log` viewer (action/targetType
-filters, paginated, actor-joined). Phase 32 resolved the owner's
-listing-management ask: confirmed listing deletion already worked with
-no restriction, and built the missing `/listings/[id]/edit` page for
-the real gap (editing had zero UI despite a fully-built backend). The
-one remaining item — **owner/legal decision, not to be implemented
+Phase 33's fresh OODA review found six real, evidence-backed items,
+deliberately deferred to keep that phase completable in one clean pass
+(full detail in Known Issues → Deferred and `docs/DECISIONS.md`'s Phase
+33 entry). The **strongest remaining purely-technical candidate** for a
+future phase is `notifyMatchingSavedSearches`'s unbounded
+`prisma.savedSearch.findMany()` (`src/modules/search/saved-searches.ts:143`)
+— loads the entire table on every listing create/edit, no evidence of
+current-scale pain but a real, previously-unaudited gap in the exact
+class Phases 17/18/20 have fixed elsewhere. Other real candidates: a
+dedicated test-coverage phase for `toggleFavorite`/image-confirm-delete/
+`uploadStoreBranding`/etc. (safe, matches the Phase 29 precedent), or a
+listing-expiry notification (bigger scope — new enum value + migration
++ job wiring).
+
+The one remaining **owner/legal decision, not to be implemented
 without input**: whether users should be deletable at all
 (self-service or admin-driven); `User.deletedAt` currently has no write
 path anywhere in the codebase — needs a product/legal answer, not an
 engineering guess (CLAUDE.md Section 8).
 
-**No further owner-independent technical gap or product feature is
-currently known.** A future session should run its own fresh OODA
-review (per the standing "don't just trust the last list" precedent
-demonstrated across this project's whole history) rather than assume
-nothing remains — but this is a genuine point to check with the owner
+**No further owner-independent technical gap or product feature beyond
+the above is currently known.** A future session should run its own
+fresh OODA review (per the standing "don't just trust the last list"
+precedent demonstrated across this project's whole history) rather than
+assume nothing remains — but this is a genuine point to check with the owner
 for a product-direction preference before defaulting to "audit again,"
 matching the same posture Phase 24/29 already recommended.
 

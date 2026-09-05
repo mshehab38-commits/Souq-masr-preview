@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
@@ -15,6 +16,19 @@ const PAGE_SIZE = 20;
 interface StorePageProps {
   params: Promise<{ slug: string }>;
   searchParams: Promise<{ page?: string }>;
+}
+
+export async function generateMetadata({ params }: StorePageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const store = await getStoreBySlug(slug);
+  if (!store) {
+    return { title: "المتجر غير متاح | سوق مصر" };
+  }
+
+  return {
+    title: `${store.name} | سوق مصر`,
+    description: store.description ?? `تصفح إعلانات متجر ${store.name} على سوق مصر`,
+  };
 }
 
 export default async function StorePage({ params, searchParams }: StorePageProps) {
@@ -54,7 +68,15 @@ export default async function StorePage({ params, searchParams }: StorePageProps
       </div>
 
       {user && user.id !== store.ownerId && (
-        <div className="mb-6">
+        <div className="mb-6 flex items-center gap-4">
+          <a
+            href={`https://wa.me/${store.owner.phone.replace("+", "")}`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-sm font-medium text-teal-700 hover:underline"
+          >
+            تواصل عبر واتساب
+          </a>
           <ReportButton targetType="USER" targetUserId={store.ownerId} label="بلاغ عن البائع" />
         </div>
       )}

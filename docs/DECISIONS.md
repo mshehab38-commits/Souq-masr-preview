@@ -1986,3 +1986,83 @@ edit page was the unambiguous choice.
 - `src/app/listings/[id]/ListingDetailActions.tsx` (new edit link)
 - `tests/catalog/listings.test.ts` (new `updateListing` describe block)
 - `e2e/listing-edit-flow.spec.ts` (new)
+
+## Phase 33: SEO essentials (robots.txt/sitemap.xml/per-page metadata) + missing store-page contact link
+
+A fresh OODA review (two Explore agents covering product and technical
+angles this session's prior 20+ audit rounds never touched) found SEO
+entirely absent — no `robots.ts`/`sitemap.ts`, and every page inheriting
+the root layout's fixed generic title/description regardless of
+content — and a real, live UX inconsistency: the store page had no way
+to contact the seller at all, unlike the listing detail page's existing
+WhatsApp deep link.
+
+- **`env.APP_URL` is the base URL for every absolute link** in
+  `robots.ts`/`sitemap.ts` — already validated in `src/lib/env.ts` and
+  already used exactly this way in `src/lib/storage/local-provider.ts`;
+  no new env var introduced.
+- **Sitemap is capped at 5,000 URLs per entity type (listings, stores)**
+  — a new `listActiveListingIdsForSitemap()`/`listStoreSlugsForSitemap()`
+  each `take`-bounded and ordered newest-updated-first. Deliberately
+  learning from this same review's other finding
+  (`notifyMatchingSavedSearches`'s unbounded `findMany()`, see Known
+  Issues below) — this project's own pagination/rate-limiting audits
+  have repeatedly found unbounded queries, so the sitemap builder was
+  written bounded from the start rather than added to that list later.
+  Google's own sitemap limit is 50,000 URLs; 5,000 is a generous
+  technical default for this project's actual scale, not a business
+  decision. A sitemap-index/pagination scheme is out of scope until
+  real listing volume approaches that cap.
+- **`sitemap.ts` has `export const revalidate = 3600`** — without it, a
+  route with no dynamic API calls is fully static (generated once at
+  build time), meaning new listings would be invisible to crawlers
+  until the next deploy. Hourly matches the homepage's own existing
+  `revalidate = 60`-style convention (`src/app/page.tsx`) for a
+  similarly read-heavy, frequently-changing public page — caught only
+  by inspecting the actual `npm run build` output (`○ /sitemap.xml`
+  with no revalidate window shown) rather than assuming the framework
+  default was adequate.
+- **`robots.ts` disallows exactly the routes that already require a
+  session** (`/admin`, `/api`, `/dashboard`, `/profile`, `/orders`,
+  `/favorites`, `/saved-searches`, `/listings/*/edit`,
+  `/listings/*/checkout`, `/listings/mine`) — no new authorization
+  logic, just telling crawlers not to waste budget on pages they can't
+  index anyway.
+- **`generateMetadata` reuses each page's own existing data-fetching
+  function** (`getListingById`, `getStoreBySlug`) rather than a new
+  lookup path — a one-time duplicate read per request, accepted as the
+  standard cost of using `generateMetadata` in a codebase with no
+  request-level memoization layer, not a new architectural concern.
+- **Store-page contact fix reuses the listing-detail page's exact
+  WhatsApp-link pattern** (`https://wa.me/{phone}`, conditional on
+  `user?.id !== store.ownerId`). Required widening
+  `getStoreBySlug`'s `owner` select to add `phone` (previously only
+  `id, name, commerceVerifiedAt`) — a narrow, additive change with one
+  call site.
+
+Other findings from this same review, deliberately **not** implemented
+this phase (recorded so a future session doesn't need to re-run this
+audit from scratch) — see `PROJECT_STATE.md`'s Known Issues → Deferred
+for full detail: `notifyMatchingSavedSearches`'s unbounded
+`prisma.savedSearch.findMany()` (real technical debt, no evidence of
+current-scale pain, deserves its own focused pass); no proactive
+notification when a listing expires; user blocking/muting (already
+flagged since Phase 6, still absent); `NotificationBell`'s missing
+`aria-expanded`/`role="menu"`/Escape-to-close; zero direct test
+coverage on `toggleFavorite`/`confirmImageUpload`/`deleteListingImage`/
+`uploadStoreBranding`/`softDeleteListing`/`markListingAsSold`/
+`incrementListingViewCount`/`getSellerStats`; no test proving Arabic
+fuzzy/typo-tolerant search matching (the `word_similarity`
+implementation itself is correct and already shipped). Seller
+ratings/reviews were investigated and confirmed **not** a gap — Haraj
+itself has no seller-rating system, so this is parity with the
+reference product (CLAUDE.md's own stated model), not an oversight.
+
+### Critical files
+- `src/app/robots.ts`, `src/app/sitemap.ts` (new)
+- `src/modules/catalog/listings.ts`, `src/modules/catalog/service.ts`
+- `src/modules/store/store.ts`, `src/modules/store/service.ts`
+- `src/app/listings/[id]/page.tsx`, `src/app/store/[slug]/page.tsx`,
+  `src/app/search/page.tsx`
+- `tests/catalog/listings.test.ts`, `tests/store/store.test.ts`
+- `e2e/store-management-flow.spec.ts`

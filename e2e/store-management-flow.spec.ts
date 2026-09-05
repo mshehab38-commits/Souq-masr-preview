@@ -18,19 +18,30 @@ function uniqueStoreName(): string {
 test.describe("seller dashboard: create store, view storefront, bulk-manage listings", () => {
   let rawPhone: string;
   let normalizedPhone: string;
+  let visitorRawPhone: string;
+  let visitorPhone: string;
 
   test.beforeEach(() => {
     rawPhone = randomTestPhone();
     normalizedPhone = normalizeEgyptianPhone(rawPhone) as string;
+    visitorRawPhone = randomTestPhone();
+    visitorPhone = normalizeEgyptianPhone(visitorRawPhone) as string;
   });
 
   test.afterEach(async () => {
-    const user = await prisma.user.findUnique({ where: { phone: normalizedPhone } });
+    const [user, visitor] = await Promise.all([
+      prisma.user.findUnique({ where: { phone: normalizedPhone } }),
+      prisma.user.findUnique({ where: { phone: visitorPhone } }).catch(() => null),
+    ]);
     if (user) {
       await prisma.listing.deleteMany({ where: { ownerId: user.id } });
       await prisma.store.deleteMany({ where: { ownerId: user.id } });
       await prisma.session.deleteMany({ where: { userId: user.id } });
       await prisma.user.delete({ where: { id: user.id } });
+    }
+    if (visitor) {
+      await prisma.session.deleteMany({ where: { userId: visitor.id } });
+      await prisma.user.delete({ where: { id: visitor.id } });
     }
   });
 
@@ -77,7 +88,7 @@ test.describe("seller dashboard: create store, view storefront, bulk-manage list
     await expect(page.getByRole("heading", { name: storeName })).toBeVisible();
     await expect(page.getByText(title)).toBeVisible();
 
-    // --- bulk-mark the listing as sold from /listings/mine ---
+    // --- bulk-mark the listing as sold from /listings/mine (still the seller's own session) ---
     await page.goto("/listings/mine");
     await page.getByLabel(`تحديد ${title}`).check();
     const bulkResponse = page.waitForResponse("**/api/listings/bulk");
@@ -89,5 +100,24 @@ test.describe("seller dashboard: create store, view storefront, bulk-manage list
     await page.goto(`/store/${slug}`);
     await expect(page.getByText(title)).not.toBeVisible();
     await expect(page.getByText("لا توجد إعلانات حالياً")).toBeVisible();
+
+    // --- a non-owner visitor sees a working WhatsApp contact link ---
+    // (done last, and only once as the seller, to avoid re-triggering the
+    // seller's own 60s OTP request cooldown with a second login)
+    await page.goto("/profile");
+    await page.getByRole("button", { name: /تسجيل الخروج/ }).click();
+    await page.goto("/login");
+    await page.getByLabel("رقم الهاتف").fill(visitorRawPhone);
+    const visitorOtpResponse = page.waitForResponse("**/api/auth/otp/request");
+    await page.getByRole("button", { name: "إرسال الرمز" }).click();
+    const visitorDevCode = (await (await visitorOtpResponse).json()).devCode as string;
+    await page.getByLabel("رمز التحقق").fill(visitorDevCode);
+    await page.getByRole("button", { name: "تأكيد" }).click();
+    await page.waitForURL("**/profile");
+
+    await page.goto(`/store/${slug}`);
+    const contactLink = page.getByRole("link", { name: "تواصل عبر واتساب" });
+    await expect(contactLink).toBeVisible();
+    await expect(contactLink).toHaveAttribute("href", /^https:\/\/wa\.me\/\d+$/);
   });
 });
