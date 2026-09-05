@@ -186,7 +186,8 @@ tasks to be framed across disciplines).
 | 30 | Built the `/search` price-range filter UI (Phase 29's recommended next action) — backend (`SearchFilters`, `resolveSearchFilters`, `PostgresSearchProvider`, `GET /api/search`, saved-search matching) already fully supported it; only the page's form was missing it | aca275e | Done |
 | 31 | Built the `/admin/audit-log` viewer — `AuditLog` was completely write-only until now; new `listAuditLogs()` (`src/lib/audit.ts`), `GET /api/admin/audit-log`, and an admin page with action/targetType filters + pagination | 56fca86 | Done |
 | 32 | Owner clarified a "user deletion" question was really about listing management. Verified delete already fully works; built the missing `/listings/[id]/edit` page — `updateListing`/`PATCH /api/listings/[id]` were fully built and tested-adjacent but had zero UI consumer | a04627c | Done |
-| 33 | Fresh OODA review (two Explore agents, product + technical angles). Built SEO essentials (`robots.ts`, `sitemap.ts`, per-page `generateMetadata` for search/listing/store) and fixed a real live gap: the store page had no way to contact the seller at all | this session | **Done** |
+| 33 | Fresh OODA review (two Explore agents, product + technical angles). Built SEO essentials (`robots.ts`, `sitemap.ts`, per-page `generateMetadata` for search/listing/store) and fixed a real live gap: the store page had no way to contact the seller at all | d523b2a | Done |
+| 34 | Owner resolved the long-standing account-deletion OWNER DECISION: users can never delete their own account directly, only submit a request an admin must approve. Built `AccountDeletionRequest` submit/cancel/admin-review flow with a full cascade (locks the account, revokes sessions, soft-deletes listings + store) | this session | **Done** |
 
 ## Approved Business Model (governs all of Phase 5)
 
@@ -1074,6 +1075,38 @@ runtime bug. Fixed by moving the fallback rate onto
   `prisma/schema.prisma`. See `docs/DATABASE.md` for full entity
   documentation.
 
+## What Was Completed in Phase 34
+
+The owner explicitly resolved the account-deletion OWNER DECISION
+REQUIRED item open since Phases 6/29: **a user cannot delete their own
+account directly — they submit a request, and it only takes effect
+once an admin approves it.** Mirrored the already-shipped
+`VerificationRequest` submit/admin-review pattern exactly (dedupe on
+an existing `PENDING` row, status-transition-inside-one-transaction,
+audit+notification after commit).
+
+- New `AccountDeletionRequest` model (dedicated, not an extra
+  `VerificationRequestType`), `src/modules/identity/account-deletion.ts`:
+  `submitAccountDeletionRequest` (dedupes), `cancelAccountDeletionRequest`
+  (self-service, ownership-scoped), `listAccountDeletionRequests` (admin
+  queue), `reviewAccountDeletionRequest` (approve/reject).
+- On `APPROVED`: sets `User.deletedAt` (already enforced with zero
+  further code by `getSessionUser` — this feature's core enforcement
+  point already existed, it simply never had a write path), revokes
+  every active session, bulk soft-deletes every listing the user owns,
+  and soft-deletes their store. `Order`/`LedgerEntry`/`Report`/
+  `Notification`/`Favorite`/`SavedSearch` rows are deliberately left
+  untouched (financial/audit integrity).
+- A last-remaining-`ADMIN` guard refuses to approve deleting the sole
+  admin account, mirroring `setUserRole`'s own lockout safeguard.
+- New `/account-deletion-requests` (submit/list/cancel) and
+  `/admin/account-deletion-requests` (list/review, `requireAdmin()`-only)
+  API routes; a "حذف الحساب" section on `/profile` (submit with an
+  optional reason, or cancel a pending one); a new
+  `/admin/account-deletion-requests` admin queue page mirroring the
+  existing verification queue's UI shape.
+- New `ACCOUNT_DELETION_REVIEWED` `NotificationType`.
+
 ## What Was Completed in Phase 33
 
 The owner asked for a fresh OODA review rather than another rote audit.
@@ -1296,6 +1329,38 @@ already sufficient). See `docs/DECISIONS.md`'s Phase 28 entry for full
 rationale. No financial/business decision involved — pure audit-trail
 completeness, no behavior change visible to any admin beyond richer
 `AuditLog` rows.
+
+## Tests & Results (Phase 34, all green)
+
+- `npx prisma migrate dev` (+ bare re-check) — clean, one new migration
+  (`add_account_deletion_requests`).
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run boundaries` — no violations (241 modules, 876 dependencies).
+- `npm test` — **424/424 unit tests passing** across 50 files. New this
+  phase: `tests/identity/account-deletion.test.ts` (10 tests) covering
+  submit/dedupe, self-cancel (including refusing another user's
+  request), the admin queue's default PENDING/oldest-first ordering,
+  REJECTED leaving the account untouched, APPROVED's full cascade
+  (`deletedAt` set, sessions revoked, listings soft-deleted regardless
+  of prior status, store soft-deleted), refusing to re-review an
+  already-decided request, and both last-admin-guard cases (refuses
+  when sole admin, allows when another admin remains).
+- `npx playwright test` — **12/12 e2e specs passing**, including new
+  `e2e/account-deletion-flow.spec.ts`: a seller submits a deletion
+  request from `/profile`, an admin (in a separate browser context so
+  the seller's session is never disturbed) approves it from
+  `/admin/account-deletion-requests`, and the seller's still-open
+  session is confirmed locked out (`/profile` redirects to `/login`)
+  with their listing no longer appearing in search. (Three unrelated
+  specs failed on the first full run from OTP IP-rate-limit exhaustion
+  after many logins in one suite — a known, pre-existing environment
+  artifact, not a regression; clearing the `otp:ip-window:127.0.0.1`
+  Redis key and re-running confirmed all three pass.)
+- `npm run build` — clean; new routes
+  `/admin/account-deletion-requests`, `/api/account-deletion-requests`,
+  `/api/account-deletion-requests/[id]`,
+  `/api/admin/account-deletion-requests[/[id]]` all appear correctly.
 
 ## Tests & Results (Phase 33, all green)
 
@@ -2535,6 +2600,17 @@ See `docs/DECISIONS.md` for full rationale. Summary:
   security audit backlog was treated as sufficiently covered (Phases
   20-26) to justify shifting toward product completion instead.
 
+## OWNER DECISION REQUIRED — Resolved (Phase 34)
+
+**Whether users should be able to delete their accounts** — open since
+Phase 6, re-flagged by Phase 29's fresh review. The owner decided
+explicitly: **a user cannot delete their own account directly — they
+submit a request, and it only takes effect once an admin approves it.**
+Built in Phase 34: `AccountDeletionRequest` submit/cancel/admin-review
+flow, with approval cascading to lock the account (`User.deletedAt`),
+revoke sessions, and soft-delete the user's listings and store. See
+`docs/DECISIONS.md`'s Phase 34 entry for the full design.
+
 ## OWNER DECISION REQUIRED — Resolved
 
 The 9 blocking decisions (D1–D9) tracked before Phase 5 began are now
@@ -2620,6 +2696,9 @@ None.
 
 ## Exact Next Action
 
+Phase 34 resolved the last open owner/legal decision (account
+deletion). **No owner decision is currently open.**
+
 Phase 33's fresh OODA review found six real, evidence-backed items,
 deliberately deferred to keep that phase completable in one clean pass
 (full detail in Known Issues → Deferred and `docs/DECISIONS.md`'s Phase
@@ -2633,12 +2712,6 @@ dedicated test-coverage phase for `toggleFavorite`/image-confirm-delete/
 `uploadStoreBranding`/etc. (safe, matches the Phase 29 precedent), or a
 listing-expiry notification (bigger scope — new enum value + migration
 + job wiring).
-
-The one remaining **owner/legal decision, not to be implemented
-without input**: whether users should be deletable at all
-(self-service or admin-driven); `User.deletedAt` currently has no write
-path anywhere in the codebase — needs a product/legal answer, not an
-engineering guess (CLAUDE.md Section 8).
 
 **No further owner-independent technical gap or product feature beyond
 the above is currently known.** A future session should run its own

@@ -32,3 +32,16 @@ export type {
   VerificationDecision,
   SubmitVerificationRequestResult,
 } from "./verification";
+export {
+  submitAccountDeletionRequest,
+  getAccountDeletionRequests,
+  cancelAccountDeletionRequest,
+  listAccountDeletionRequests,
+  reviewAccountDeletionRequest,
+} from "./account-deletion";
+export type {
+  SubmitAccountDeletionRequestResult,
+  ListAccountDeletionRequestsFilter,
+  AccountDeletionDecision,
+  ReviewAccountDeletionRequestResult,
+} from "./account-deletion";

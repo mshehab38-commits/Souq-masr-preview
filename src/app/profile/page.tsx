@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import {
   getCurrentUser,
   getVerificationRequests,
+  getAccountDeletionRequests,
   formatEgyptianPhoneLocal,
 } from "@/modules/identity/service";
 import { ProfileView } from "./ProfileView";
@@ -12,7 +13,11 @@ export default async function ProfilePage() {
     redirect("/login");
   }
 
-  const { items: verificationRequests } = await getVerificationRequests(user.id);
+  const [{ items: verificationRequests }, deletionRequests] = await Promise.all([
+    getVerificationRequests(user.id),
+    getAccountDeletionRequests(user.id),
+  ]);
+  const pendingDeletionRequest = deletionRequests.find((request) => request.status === "PENDING") ?? null;
 
   return (
     <ProfileView
@@ -31,6 +36,7 @@ export default async function ProfilePage() {
         businessName: request.businessName,
         createdAt: request.createdAt.toISOString(),
       }))}
+      pendingDeletionRequest={pendingDeletionRequest ? { id: pendingDeletionRequest.id } : null}
     />
   );
 }

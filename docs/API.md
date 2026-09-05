@@ -83,6 +83,32 @@ instead of creating a duplicate (`alreadyPending: true`) — mirrors
 `POST /api/reports`'s `alreadyOpen` dedupe (Phase 21). Admin review UI
 lands in Phase 10.
 
+## Account Deletion Requests (Phase 34)
+
+A user can never delete their own account directly — only submit a
+request; deletion only takes effect once an admin approves it (see
+`docs/DECISIONS.md`).
+
+### `GET /api/account-deletion-requests`
+
+Requires session. Returns `{ items }` — the current user's own
+deletion-request history, newest first. No pagination: structurally
+always tiny (at most one `PENDING` request at a time).
+
+### `POST /api/account-deletion-requests`
+
+Requires session + CSRF. Body: `{ reason?: string }`. Returns `201 {
+request, alreadyPending }`. If the user already has a `PENDING`
+request, that existing request is returned instead of creating a
+duplicate (`alreadyPending: true`), mirroring
+`POST /api/verification-requests`'s dedupe.
+
+### `DELETE /api/account-deletion-requests/[id]`
+
+Requires session + CSRF + ownership. Cancels the caller's own
+`PENDING` request. `404 not_found` if no such `PENDING` request exists
+for the caller.
+
 ## Listings (Phase 3)
 
 ### `POST /api/listings`
@@ -540,6 +566,26 @@ On `APPROVED`, sets `User.commerceVerifiedAt` and, only for a `BUSINESS`
 request against a still-`INDIVIDUAL` user, promotes their role to
 `BUSINESS`. Fails `409 already_reviewed` for a request that's already
 been decided.
+
+## Admin: Account Deletion Requests (Phase 34)
+
+ADMIN only (not MODERATOR — approving cascades across the user's
+listings and store and permanently locks the account).
+
+### `GET /api/admin/account-deletion-requests`
+
+Query params: `status` (default `PENDING`), `page`.
+
+### `PATCH /api/admin/account-deletion-requests/[id]`
+
+Body: `{ decision: "APPROVED" | "REJECTED", notes? }`. On `APPROVED`:
+sets `User.deletedAt` (already enforced by `getSessionUser` with no
+further code), revokes every active session, and soft-deletes every
+listing the user owns plus their store if they have one. `Order`/
+`LedgerEntry`/`Report`/`Notification`/`Favorite`/`SavedSearch` rows are
+left untouched. Fails `409 already_reviewed` for an already-decided
+request, or `409 last_admin` if the target is the sole remaining
+`ADMIN` account.
 
 ## Notifications (Phase 7)
 
